@@ -4,23 +4,18 @@
     {
       "layers" : [
         {
-          "glass" : false,
           "image-name-specializations" : [
             {
-              "value" : "Light.png"
+              "value" : "Light Icon New.png"
             },
             {
-              "appearance" : "light",
-              "value" : "Dark.png"
-            },
-            {
-              "appearance" : "tinted",
-              "value" : "Dark.png"
+              "appearance" : "dark",
+              "value" : "Dark Icon New.png"
             }
           ],
-          "name" : "Dark",
+          "name" : "Dark Icon New",
           "position" : {
-            "scale" : 0.67,
+            "scale" : 0.82,
             "translation-in-points" : [
               0,
               0

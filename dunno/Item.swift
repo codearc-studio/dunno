@@ -1,18 +1,5 @@
+// Intentionally empty.
 //
-//  Item.swift
-//  dunno
-//
-//  Created by Makai O'Neill on 8/23/26.
-//
-
-import Foundation
-import SwiftData
-
-@Model
-final class Item {
-    var timestamp: Date
-    
-    init(timestamp: Date) {
-        self.timestamp = timestamp
-    }
-}
+// This file used to contain Xcode's default SwiftData template model. Dunno is
+// currently local-first with explicit Codable/UserDefaults state, so keeping the
+// unused template model around only adds noise and an unnecessary SwiftData import.
