@@ -144,7 +144,7 @@ struct ExploreView: View {
                 Button { searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -236,7 +236,7 @@ struct ExploreView: View {
 
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
                     .padding(.top, 3)
             }
 
@@ -394,6 +394,7 @@ private struct ExploreMiniCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var accent: Color { DunnoTheme.categoryAccent(activity.category) }
+    private var textAccent: Color { DunnoTheme.categoryTextAccent(activity.category, scheme: colorScheme) }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -423,7 +424,7 @@ private struct ExploreMiniCard: View {
                     Text(activity.category.rawValue.lowercased())
                         .font(Font.dunno(9, weight: .bold))
                         .tracking(0.25)
-                        .foregroundStyle(accent)
+                        .foregroundStyle(textAccent)
                 }
 
                 Spacer(minLength: 6)

@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ProfileView: View {
     @EnvironmentObject private var store: DunnoStore
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(DunnoAppearance.storageKey) private var appearanceRawValue = DunnoAppearance.system.rawValue
     @State private var showingEdit = false
     @State private var showingHidden = false
     @State private var showingAbout = false
@@ -31,7 +33,7 @@ struct ProfileView: View {
 
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
                             }
                             .padding(.horizontal, 15)
                             .frame(minHeight: 50)
@@ -40,6 +42,7 @@ struct ProfileView: View {
                         .buttonStyle(DunnoPressableStyle())
                         .accessibilityHint("Opens your Dunno preferences.")
 
+                        appearanceSection
                         behaviorSection
 
                         profileSection("sounds like you", values: store.profile.roles)
@@ -101,6 +104,28 @@ struct ProfileView: View {
         }
     }
 
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            DunnoSectionHeader(
+                title: "appearance",
+                subtitle: "Keep Dunno in light or dark mode, or let your iPhone decide."
+            )
+
+            Picker("appearance", selection: $appearanceRawValue) {
+                ForEach(DunnoAppearance.allCases) { appearance in
+                    Text(appearance.title).tag(appearance.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .tint(DunnoTheme.selectedControlFill(for: colorScheme))
+            .accessibilityHint("Changes Dunno's appearance across the entire app.")
+        }
+        .padding(17)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dunnoSolidPanel(cornerRadius: 23, accent: Color.dunnoPurple)
+    }
+
     private var behaviorSection: some View {
         VStack(alignment: .leading, spacing: 15) {
             DunnoSectionHeader(title: "suggestions")
@@ -150,7 +175,7 @@ struct ProfileView: View {
 
                         Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
                     }
                     .contentShape(Rectangle())
                 }
@@ -281,7 +306,7 @@ struct ProfileView: View {
 
             Text(DunnoReleaseInfo.versionDisplay)
                 .font(Font.dunno(10.5, weight: .medium))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
 
             Link(destination: DunnoReleaseInfo.codeArc) {
                 Text("made by CodeArc.studio")
@@ -330,7 +355,7 @@ struct ProfileView: View {
 
             Image(systemName: showsExternalLink ? "arrow.up.right" : "chevron.right")
                 .font(.system(size: showsExternalLink ? 10 : 11, weight: .semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
         }
         .padding(.horizontal, 13)
         .frame(minHeight: 52)

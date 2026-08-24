@@ -20,6 +20,32 @@ extension Color {
     }
 }
 
+enum DunnoAppearance: String, CaseIterable, Identifiable {
+    static let storageKey = "dunno.appearance"
+
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "system"
+        case .light: "light"
+        case .dark: "dark"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
 enum DunnoMotion {
     /// Tiny feedback: button presses, chips, and selection changes.
     static let micro = Animation.spring(duration: 0.20, bounce: 0.05)
@@ -68,27 +94,50 @@ struct DunnoTheme {
     )
 
     static func background(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: 0x090A0E) : Color(hex: 0xF5F6F9)
+        // Light mode is intentionally pearl-gray rather than plain white. That gives the
+        // cards, glass, and artwork real depth while keeping the interface calm.
+        scheme == .dark ? Color(hex: 0x090A0E) : Color(hex: 0xF1F2F7)
     }
 
     static func surface(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: 0x121419) : Color(hex: 0xFAFAFC)
+        scheme == .dark ? Color(hex: 0x121419) : Color(hex: 0xF6F7FA)
     }
 
     static func elevatedSurface(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: 0x171A20) : Color.white
+        scheme == .dark ? Color(hex: 0x171A20) : Color(hex: 0xFAFAFD)
     }
 
     static func cardSurface(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: 0x151820) : Color(hex: 0xFFFFFF)
+        scheme == .dark ? Color(hex: 0x151820) : Color(hex: 0xFCFCFF)
     }
 
     static func secondaryText(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: 0xA7ABB5) : Color(hex: 0x606570)
+        scheme == .dark ? Color(hex: 0xA7ABB5) : Color(hex: 0x5B616D)
     }
 
     static func tertiaryText(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: 0x727782) : Color(hex: 0x8B909A)
+        // Both variants clear 4.5:1 against their primary Dunno surfaces.
+        scheme == .dark ? Color(hex: 0x7E8490) : Color(hex: 0x676D79)
+    }
+
+    static func purpleText(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.dunnoPurple : Color(hex: 0x5D43CC)
+    }
+
+    static func blueText(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.dunnoBlue : Color(hex: 0x315FB8)
+    }
+
+    static func tealText(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.dunnoTeal : Color(hex: 0x137A65)
+    }
+
+    static func roseText(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.dunnoRose : Color(hex: 0xC43D52)
+    }
+
+    static func selectedControlFill(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(hex: 0x6B4BE0) : Color(hex: 0x5D43CC)
     }
 
     static func divider(for scheme: ColorScheme) -> Color {
@@ -110,6 +159,25 @@ struct DunnoTheme {
         }
     }
 
+    /// Category artwork stays bright. Small category text uses darker light-mode variants
+    /// so labels remain readable without dulling the branded illustrations.
+    static func categoryTextAccent(_ category: DunnoCategory, scheme: ColorScheme) -> Color {
+        guard scheme == .light else { return categoryAccent(category) }
+
+        return switch category {
+        case .create: Color(hex: 0x6848C8)
+        case .tech: Color(hex: 0x3F63B4)
+        case .explore: Color(hex: 0x177865)
+        case .learn: Color(hex: 0x4F5FC0)
+        case .relax: Color(hex: 0x7452C4)
+        case .active: Color(hex: 0x167A58)
+        case .social: Color(hex: 0xAC4D69)
+        case .food: Color(hex: 0x9A5D20)
+        case .play: Color(hex: 0x5F47C4)
+        case .productive: Color(hex: 0x4D6378)
+        }
+    }
+
     /// Legacy name kept so older components compile. The current card language is a
     /// restrained neutral surface with a very slight directional light shift.
     static func activityCardGradient(_ category: DunnoCategory, scheme: ColorScheme) -> LinearGradient {
@@ -117,7 +185,7 @@ struct DunnoTheme {
         return LinearGradient(
             colors: [
                 base,
-                scheme == .dark ? Color(hex: 0x12151B) : Color(hex: 0xF9FAFC)
+                scheme == .dark ? Color(hex: 0x12151B) : Color(hex: 0xF6F7FC)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -199,12 +267,22 @@ struct DunnoBackground: View {
             // without turning the screen itself into a gradient poster.
             RadialGradient(
                 colors: [
-                    Color.dunnoPurple.opacity(colorScheme == .dark ? 0.065 : 0.038),
+                    Color.dunnoPurple.opacity(colorScheme == .dark ? 0.065 : 0.072),
                     .clear
                 ],
                 center: UnitPoint(x: 0.93, y: -0.02),
                 startRadius: 0,
-                endRadius: 360
+                endRadius: 380
+            )
+
+            RadialGradient(
+                colors: [
+                    Color.dunnoTeal.opacity(colorScheme == .dark ? 0.028 : 0.040),
+                    .clear
+                ],
+                center: UnitPoint(x: 0.04, y: 0.92),
+                startRadius: 0,
+                endRadius: 330
             )
 
         }
@@ -226,7 +304,7 @@ private struct DunnoSolidPanelModifier: ViewModifier {
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.075 : 0.06), lineWidth: 0.8)
+                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.075 : 0.075), lineWidth: 0.8)
             }
             .overlay(alignment: .topLeading) {
                 if let accent {
@@ -244,10 +322,31 @@ private struct DunnoSolidPanelModifier: ViewModifier {
                 }
             }
             .shadow(
-                color: Color.black.opacity(colorScheme == .dark ? 0.10 : 0.035),
-                radius: 11,
-                y: 6
+                color: Color.black.opacity(colorScheme == .dark ? 0.10 : 0.055),
+                radius: colorScheme == .dark ? 11 : 14,
+                y: colorScheme == .dark ? 6 : 7
             )
+    }
+}
+
+struct DunnoGlassEffectContainer<Content: View>: View {
+    let spacing: CGFloat
+    private let content: Content
+
+    init(spacing: CGFloat = 8, @ViewBuilder content: () -> Content) {
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -271,11 +370,11 @@ private struct DunnoGlassPanelModifier: ViewModifier {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .stroke((tint ?? Color.primary).opacity(0.11), lineWidth: 0.8)
                 }
-        } else {
+        } else if #available(iOS 26.0, *) {
             content
                 .background {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(Color.primary.opacity(0.012))
+                        .fill(colorScheme == .dark ? Color.primary.opacity(0.012) : Color.white.opacity(0.26))
                 }
                 .glassEffect(
                     .regular.tint(tint).interactive(interactive),
@@ -284,6 +383,20 @@ private struct DunnoGlassPanelModifier: ViewModifier {
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .stroke(Color.primary.opacity(0.055), lineWidth: 0.7)
+                }
+        } else {
+            content
+                .background {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                }
+                .background {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill((tint ?? Color.clear).opacity(colorScheme == .dark ? 0.08 : 0.055))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke((tint ?? Color.primary).opacity(colorScheme == .dark ? 0.11 : 0.09), lineWidth: 0.8)
                 }
         }
     }
@@ -302,14 +415,23 @@ private struct DunnoGlassCapsuleModifier: ViewModifier {
             content
                 .background { Capsule().fill(DunnoTheme.elevatedSurface(for: colorScheme).opacity(0.98)) }
                 .overlay { Capsule().stroke((tint ?? Color.primary).opacity(0.10), lineWidth: 0.8) }
-        } else {
+        } else if #available(iOS 26.0, *) {
             content
-                .background { Capsule().fill(Color.primary.opacity(0.012)) }
+                .background { Capsule().fill(colorScheme == .dark ? Color.primary.opacity(0.012) : Color.white.opacity(0.24)) }
                 .glassEffect(
                     .regular.tint(tint).interactive(interactive),
                     in: Capsule()
                 )
                 .overlay { Capsule().stroke(Color.primary.opacity(0.05), lineWidth: 0.7) }
+        } else {
+            content
+                .background { Capsule().fill(.ultraThinMaterial) }
+                .background {
+                    Capsule().fill((tint ?? Color.clear).opacity(colorScheme == .dark ? 0.08 : 0.055))
+                }
+                .overlay {
+                    Capsule().stroke((tint ?? Color.primary).opacity(colorScheme == .dark ? 0.10 : 0.085), lineWidth: 0.8)
+                }
         }
     }
 }
@@ -479,6 +601,8 @@ struct DunnoPill: View {
     let isSelected: Bool
     var action: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 7) {
@@ -494,8 +618,15 @@ struct DunnoPill: View {
             .foregroundStyle(isSelected ? Color.white : Color.primary)
             .padding(.horizontal, 14)
             .frame(minHeight: 42)
+            .background {
+                if isSelected {
+                    Capsule().fill(DunnoTheme.selectedControlFill(for: colorScheme))
+                }
+            }
             .dunnoGlassCapsule(
-                tint: isSelected ? Color.dunnoPurple.opacity(0.58) : nil,
+                tint: isSelected
+                    ? Color.dunnoPurple.opacity(colorScheme == .dark ? 0.18 : 0.14)
+                    : nil,
                 interactive: true
             )
         }
@@ -531,9 +662,10 @@ struct DunnoPrimaryButtonStyle: ButtonStyle {
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .allowsHitTesting(false)
             }
-            .glassEffect(
-                .regular.tint(Color.dunnoPurple.opacity(0.12)).interactive(),
-                in: .rect(cornerRadius: 20)
+            .dunnoGlassPanel(
+                cornerRadius: 20,
+                tint: Color.dunnoPurple.opacity(0.12),
+                interactive: true
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)

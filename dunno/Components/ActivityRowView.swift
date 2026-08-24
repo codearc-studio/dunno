@@ -8,6 +8,7 @@ struct ActivityRowView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var accent: Color { DunnoTheme.categoryAccent(activity.category) }
+    private var textAccent: Color { DunnoTheme.categoryTextAccent(activity.category, scheme: colorScheme) }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -56,7 +57,7 @@ struct ActivityRowView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     Text(activity.category.rawValue.lowercased())
-                        .foregroundStyle(accent)
+                        .foregroundStyle(textAccent)
 
                     Circle()
                         .fill(Color.secondary.opacity(0.35))
@@ -73,7 +74,7 @@ struct ActivityRowView: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(activity.category.rawValue.lowercased())
-                        .foregroundStyle(accent)
+                        .foregroundStyle(textAccent)
                     Text("\(activity.durationLabel) · \(activity.energy.shortLabel) energy")
                 }
             }

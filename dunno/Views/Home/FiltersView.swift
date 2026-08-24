@@ -4,6 +4,7 @@ struct FiltersView: View {
     @EnvironmentObject private var store: DunnoStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     private let times: [(String, Int?)] = [
         ("Any", nil),
@@ -134,11 +135,11 @@ struct FiltersView: View {
         return HStack(spacing: 10) {
             Image(systemName: count == 0 ? "exclamationmark.circle" : "checkmark.circle")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(count == 0 ? Color.dunnoRose : Color.dunnoTeal)
+                .foregroundStyle(count == 0 ? DunnoTheme.roseText(for: colorScheme) : DunnoTheme.tealText(for: colorScheme))
 
             Text(count == 0 ? "nothing fits every choice yet" : "\(count) ideas fit right now")
                 .font(Font.dunno(13.5, weight: .semibold))
-                .foregroundStyle(count == 0 ? Color.dunnoRose : .secondary)
+                .foregroundStyle(count == 0 ? DunnoTheme.roseText(for: colorScheme) : .secondary)
 
             Spacer()
         }
@@ -151,7 +152,7 @@ struct FiltersView: View {
             Text("right now")
                 .font(Font.dunno(10, weight: .bold))
                 .tracking(0.35)
-                .foregroundStyle(Color.dunnoPurple)
+                .foregroundStyle(DunnoTheme.purpleText(for: colorScheme))
 
             Text("what's going on?")
                 .font(Font.dunnoRounded(30, weight: .bold))
@@ -175,7 +176,7 @@ struct FiltersView: View {
                 .font(Font.dunno(16, weight: .semibold))
                 .foregroundStyle(.primary)
 
-            GlassEffectContainer(spacing: 8) {
+            DunnoGlassEffectContainer(spacing: 8) {
                 content()
             }
         }

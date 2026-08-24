@@ -162,7 +162,7 @@ struct OnboardingView: View {
             subtitle: "The subjects that can actually steal your attention.",
             actionTitle: store.profile.interests.isEmpty ? "skip for now" : "continue"
         ) {
-            GlassEffectContainer(spacing: 8) {
+            DunnoGlassEffectContainer(spacing: 8) {
                 FlowLayout(spacing: 8) {
                     ForEach(DunnoTaxonomy.interests) { item in
                         DunnoPill(
@@ -217,7 +217,7 @@ struct OnboardingView: View {
                         Text("quick vibe check")
                             .font(Font.dunno(10, weight: .bold))
                             .tracking(0.35)
-                            .foregroundStyle(Color.dunnoPurple)
+                            .foregroundStyle(DunnoTheme.purpleText(for: colorScheme))
 
                         Text("would you actually do this?")
                             .font(Font.dunnoRounded(27, weight: .bold))
@@ -297,19 +297,27 @@ struct OnboardingView: View {
         action: @escaping () -> Void
     ) -> some View {
         let accent = positive ? Color.dunnoTeal : Color.dunnoRose
+        let readableAccent = positive
+            ? DunnoTheme.tealText(for: colorScheme)
+            : DunnoTheme.roseText(for: colorScheme)
 
         return Button(action: action) {
             Label(title, systemImage: systemName)
                 .font(Font.dunnoRounded(15, weight: .bold))
-                .foregroundStyle(positive ? Color.white : Color.primary)
+                .foregroundStyle(readableAccent)
                 .frame(maxWidth: .infinity)
                 .frame(height: 54)
-                .glassEffect(
-                    .regular.tint(accent.opacity(positive ? 0.54 : 0.16)).interactive(),
-                    in: Capsule()
+                .background {
+                    if colorScheme == .light {
+                        Capsule().fill(accent.opacity(positive ? 0.08 : 0.055))
+                    }
+                }
+                .dunnoGlassCapsule(
+                    tint: accent.opacity(colorScheme == .dark ? (positive ? 0.24 : 0.13) : 0.08),
+                    interactive: true
                 )
                 .overlay {
-                    Capsule().stroke(accent.opacity(positive ? 0.28 : 0.14), lineWidth: 0.75)
+                    Capsule().stroke(readableAccent.opacity(colorScheme == .dark ? 0.42 : 0.30), lineWidth: 0.8)
                 }
         }
         .buttonStyle(DunnoPressableStyle())
@@ -449,7 +457,7 @@ struct OnboardingView: View {
                         Text(eyebrow.lowercased())
                             .font(Font.dunno(10, weight: .bold))
                             .tracking(0.35)
-                            .foregroundStyle(Color.dunnoPurple)
+                            .foregroundStyle(DunnoTheme.purpleText(for: colorScheme))
 
                         Text(title)
                             .font(Font.dunnoRounded(30, weight: .bold))

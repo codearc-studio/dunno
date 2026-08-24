@@ -17,6 +17,7 @@ struct ActivityDetailView: View {
     private var isCurrent: Bool { store.currentActivityID == activity.id }
     private var isCompleted: Bool { store.isCompleted(activity) }
     private var accent: Color { DunnoTheme.categoryAccent(activity.category) }
+    private var textAccent: Color { DunnoTheme.categoryTextAccent(activity.category, scheme: colorScheme) }
 
     var body: some View {
         NavigationStack {
@@ -100,7 +101,7 @@ struct ActivityDetailView: View {
                     Text(activity.category.rawValue.lowercased())
                         .font(Font.dunno(10, weight: .bold))
                         .tracking(0.35)
-                        .foregroundStyle(accent)
+                        .foregroundStyle(textAccent)
 
                     Text(isCurrent ? "doing now" : isCompleted ? "in did it" : "an idea for you")
                         .font(Font.dunno(12, weight: .medium))
@@ -157,7 +158,7 @@ struct ActivityDetailView: View {
                     HStack(alignment: .top, spacing: 14) {
                         Text("\(index + 1)")
                             .font(Font.dunno(11, weight: .bold))
-                            .foregroundStyle(accent)
+                            .foregroundStyle(textAccent)
                             .frame(width: 27, height: 27)
                             .background(accent.opacity(0.10), in: Circle())
 
@@ -236,7 +237,7 @@ struct ActivityDetailView: View {
         HStack(spacing: 12) {
             Image(systemName: "play.fill")
                 .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color.dunnoTeal)
+                .foregroundStyle(DunnoTheme.tealText(for: colorScheme))
                 .frame(width: 32, height: 32)
                 .background(Color.dunnoTeal.opacity(0.10), in: Circle())
 

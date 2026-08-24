@@ -746,7 +746,7 @@
       "id": "game-challenge",
       "title": "Give a familiar game a weird rule",
       "hook": "Same game, different objective.",
-      "description": "Invent a challenge that changes how you normally play: no fast travel, one weapon type, weird build, self-imposed timer, anything.",
+      "description": "Invent a challenge that changes how you normally play: no fast travel, one item class, weird build, self-imposed timer, anything.",
       "category": "Play",
       "symbol": "flag.checkered",
       "minMinutes": 30,

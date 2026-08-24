@@ -3,6 +3,7 @@ import SwiftUI
 struct HiddenSuggestionsView: View {
     @EnvironmentObject private var store: DunnoStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @State private var confirmRestoreAll = false
 
     var body: some View {
@@ -50,7 +51,7 @@ struct HiddenSuggestionsView: View {
                                             store.restoreSuggestion(activity)
                                         }
                                         .font(Font.dunno(12.5, weight: .bold))
-                                        .foregroundStyle(Color.dunnoPurple)
+                                        .foregroundStyle(DunnoTheme.purpleText(for: colorScheme))
                                         .buttonStyle(.plain)
                                     }
                                 }

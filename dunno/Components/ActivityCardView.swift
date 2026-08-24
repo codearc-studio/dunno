@@ -12,6 +12,7 @@ struct ActivityCardView: View {
 
     private var cornerRadius: CGFloat { compact ? 25 : 32 }
     private var accent: Color { DunnoTheme.categoryAccent(activity.category) }
+    private var textAccent: Color { DunnoTheme.categoryTextAccent(activity.category, scheme: colorScheme) }
     private var usesAccessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
     private var cardMinHeight: CGFloat {
         if compact { return usesAccessibilityLayout ? 286 : 218 }
@@ -102,7 +103,7 @@ struct ActivityCardView: View {
                 Text(activity.category.rawValue.lowercased())
                     .font(Font.dunno(10, weight: .bold))
                     .tracking(0.35)
-                    .foregroundStyle(accent)
+                    .foregroundStyle(textAccent)
 
                 if !compact {
                     Text("for right now")

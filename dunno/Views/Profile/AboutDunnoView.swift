@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AboutDunnoView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         NavigationStack {
@@ -50,7 +51,7 @@ struct AboutDunnoView: View {
 
             Text(DunnoReleaseInfo.versionDisplay)
                 .font(Font.dunno(11, weight: .medium))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
                 .padding(.top, 2)
         }
         .frame(maxWidth: .infinity)
@@ -82,7 +83,7 @@ struct AboutDunnoView: View {
             Link(destination: DunnoReleaseInfo.privacy) {
                 Label("read the full privacy policy", systemImage: "arrow.up.right")
                     .font(Font.dunno(13.5, weight: .semibold))
-                    .foregroundStyle(Color.dunnoPurple)
+                    .foregroundStyle(DunnoTheme.purpleText(for: colorScheme))
             }
             .buttonStyle(.plain)
         }
@@ -127,7 +128,7 @@ struct AboutDunnoView: View {
 
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
             }
             .padding(16)
             .contentShape(Rectangle())
@@ -174,7 +175,7 @@ struct AboutDunnoView: View {
 
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
             }
             .padding(.horizontal, 12)
             .frame(minHeight: 52)

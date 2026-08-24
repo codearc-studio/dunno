@@ -3,6 +3,7 @@ import SwiftUI
 struct SavedView: View {
     @EnvironmentObject private var store: DunnoStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var segment = 0
     @State private var selectedActivity: DunnoActivity?
@@ -113,7 +114,7 @@ struct SavedView: View {
             .background {
                 if selected {
                     Capsule()
-                        .fill(Color.dunnoPurple.opacity(0.78))
+                        .fill(DunnoTheme.selectedControlFill(for: colorScheme))
                         .shadow(color: Color.dunnoPurple.opacity(0.14), radius: 8, y: 3)
                 }
             }

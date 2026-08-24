@@ -177,16 +177,25 @@ struct HomeView: View {
                 store.shuffle()
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } label: {
-                Image(systemName: "arrow.clockwise")
+                shuffleIcon
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
-                    .symbolEffect(.rotate, value: store.shuffleSeed)
                     .frame(width: 44, height: 44)
                     .dunnoGlassCapsule(interactive: true)
             }
             .buttonStyle(DunnoPressableStyle())
             .disabled(isTransitioning)
             .accessibilityLabel("Give me different ideas")
+        }
+    }
+
+    @ViewBuilder
+    private var shuffleIcon: some View {
+        if #available(iOS 18.0, *) {
+            Image(systemName: "arrow.clockwise")
+                .symbolEffect(.rotate, value: store.shuffleSeed)
+        } else {
+            Image(systemName: "arrow.clockwise")
         }
     }
 
@@ -217,7 +226,7 @@ struct HomeView: View {
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
             }
             .padding(.horizontal, 14)
             .frame(minHeight: 43)
@@ -488,13 +497,19 @@ struct HomeView: View {
                 Text(title)
                     .font(Font.dunnoRounded(16, weight: .bold))
             }
-            .foregroundStyle(activeProgress > 0.16 ? Color.white : Color.primary)
+            .foregroundStyle(
+                activeProgress > 0.16
+                    ? (colorScheme == .dark
+                        ? Color.white
+                        : (positive ? DunnoTheme.tealText(for: colorScheme) : DunnoTheme.roseText(for: colorScheme)))
+                    : Color.primary
+            )
             .frame(maxWidth: .infinity)
             .frame(minHeight: 57)
             // Keep the Liquid Glass material itself stable while dragging. Rebuilding a
             // dynamically tinted glass shader every gesture frame was one of the largest
             // sources of hitching. The color wash above it still gives vivid feedback.
-            .glassEffect(.regular.interactive(), in: Capsule())
+            .dunnoGlassCapsule(interactive: true)
             .overlay {
                 Capsule()
                     .fill(accent.opacity(progress * 0.38))
@@ -544,7 +559,7 @@ struct HomeView: View {
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
             .font(Font.dunno(13, weight: .bold))
-            .foregroundStyle(Color.dunnoPurple)
+            .foregroundStyle(DunnoTheme.purpleText(for: colorScheme))
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
