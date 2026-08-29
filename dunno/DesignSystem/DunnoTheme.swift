@@ -329,27 +329,6 @@ private struct DunnoSolidPanelModifier: ViewModifier {
     }
 }
 
-struct DunnoGlassEffectContainer<Content: View>: View {
-    let spacing: CGFloat
-    private let content: Content
-
-    init(spacing: CGFloat = 8, @ViewBuilder content: () -> Content) {
-        self.spacing = spacing
-        self.content = content()
-    }
-
-    @ViewBuilder
-    var body: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) {
-                content
-            }
-        } else {
-            content
-        }
-    }
-}
-
 private struct DunnoGlassPanelModifier: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
@@ -619,16 +598,22 @@ struct DunnoPill: View {
             .padding(.horizontal, 14)
             .frame(minHeight: 42)
             .background {
-                if isSelected {
-                    Capsule().fill(DunnoTheme.selectedControlFill(for: colorScheme))
-                }
+                Capsule()
+                    .fill(
+                        isSelected
+                            ? DunnoTheme.selectedControlFill(for: colorScheme)
+                            : DunnoTheme.elevatedSurface(for: colorScheme)
+                    )
             }
-            .dunnoGlassCapsule(
-                tint: isSelected
-                    ? Color.dunnoPurple.opacity(colorScheme == .dark ? 0.18 : 0.14)
-                    : nil,
-                interactive: true
-            )
+            .overlay {
+                Capsule()
+                    .stroke(
+                        isSelected
+                            ? Color.white.opacity(0.14)
+                            : Color.primary.opacity(colorScheme == .dark ? 0.09 : 0.075),
+                        lineWidth: 0.8
+                    )
+            }
         }
         .buttonStyle(DunnoPressableStyle())
         .accessibilityLabel(title)

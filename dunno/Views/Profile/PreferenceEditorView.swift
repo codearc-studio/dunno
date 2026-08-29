@@ -68,16 +68,14 @@ struct PreferenceEditorView: View {
         VStack(alignment: .leading, spacing: 13) {
             DunnoSectionHeader(title: title)
 
-            DunnoGlassEffectContainer(spacing: 7) {
-                FlowLayout(spacing: 7) {
-                    ForEach(values, id: \.self) { value in
-                        DunnoPill(
-                            title: value,
-                            systemImage: nil,
-                            isSelected: selected.contains(value)
-                        ) {
-                            toggle(value)
-                        }
+            FlowLayout(spacing: 7) {
+                ForEach(values, id: \.self) { value in
+                    DunnoPill(
+                        title: value,
+                        systemImage: nil,
+                        isSelected: selected.contains(value)
+                    ) {
+                        toggle(value)
                     }
                 }
             }

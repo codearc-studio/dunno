@@ -33,8 +33,22 @@ final class DunnoStore: ObservableObject {
     private let rightNowLifetime: TimeInterval = 4 * 60 * 60
     private var filtersUpdatedAt: Date?
     private var exposureSaveTask: Task<Void, Never>?
+    private var activityMetadataCache: [String: ActivityMetadata] = [:]
 
-    init(defaults: UserDefaults = .standard, runDiagnostics: Bool = true) {
+    private struct ActivityMetadata {
+        let signals: Set<String>
+        let normalizedGoals: Set<String>
+        let calibrationCategoryKey: String
+        let calibrationTagKeys: [String]
+        let calibrationGoalKeys: [String]
+        let jitterSalt: Int
+        let searchableText: String
+    }
+
+    init(
+        defaults: UserDefaults = .standard,
+        runDiagnostics: Bool = ProcessInfo.processInfo.arguments.contains("-DunnoRunDiagnostics")
+    ) {
         self.defaults = defaults
 
         var loadedProfile = Self.decode(DunnoUserProfile.self, from: defaults.data(forKey: profileKey)) ?? .empty
@@ -426,13 +440,13 @@ final class DunnoStore: ObservableObject {
     ///
     /// That keeps a strong profile from becoming repetitive and keeps wildcard ideas
     /// genuinely exploratory without ever violating the user's current constraints.
-    func recommendations(filters override: DunnoFilters? = nil) -> [DunnoActivity] {
+    func recommendations(filters override: DunnoFilters? = nil, limit: Int? = nil) -> [DunnoActivity] {
         let activeFilters = override ?? filters
         let available = availableActivities(filters: activeFilters)
         guard !available.isEmpty else { return [] }
 
         let candidates = available.map { candidate(for: $0, filters: activeFilters) }
-        return buildRecommendationQueue(from: candidates)
+        return buildRecommendationQueue(from: candidates, limit: limit)
     }
 
     /// Public score is used by deliberate browsing surfaces such as Explore search.
@@ -442,10 +456,14 @@ final class DunnoStore: ObservableObject {
         personalizedScore(for: activity, filters: DunnoFilters())
     }
 
+    func searchableText(for activity: DunnoActivity) -> String {
+        metadata(for: activity).searchableText
+    }
+
     private func candidate(for activity: DunnoActivity, filters: DunnoFilters) -> RecommendationCandidate {
         let affinity = preferenceAffinity(for: activity)
         let novelty = noveltyScore(for: activity)
-        let score = personalizedScore(for: activity, filters: filters)
+        let score = personalizedScore(for: activity, filters: filters, preferenceAffinity: affinity)
 
         let hasPreferenceData = !profile.roles.isEmpty ||
             !profile.interests.isEmpty ||
@@ -473,12 +491,16 @@ final class DunnoStore: ObservableObject {
         )
     }
 
-    private func personalizedScore(for activity: DunnoActivity, filters: DunnoFilters) -> Double {
+    private func personalizedScore(
+        for activity: DunnoActivity,
+        filters: DunnoFilters,
+        preferenceAffinity cachedPreferenceAffinity: Double? = nil
+    ) -> Double {
         var value = 24.0
 
         // Profile relevance intentionally saturates. Selecting five overlapping onboarding
         // choices should not make one category unbeatable forever.
-        value += preferenceAffinity(for: activity)
+        value += cachedPreferenceAffinity ?? preferenceAffinity(for: activity)
         value += calibrationScore(for: activity)
         value += feedbackScore(for: activity)
         value += rightNowFitScore(for: activity, filters: filters)
@@ -495,7 +517,8 @@ final class DunnoStore: ObservableObject {
     }
 
     private func preferenceAffinity(for activity: DunnoActivity) -> Double {
-        let signals = DunnoTaxonomy.activitySignals(activity)
+        let metadata = metadata(for: activity)
+        let signals = metadata.signals
         var value = 0.0
 
         let roleMatches = profile.roles.reduce(into: 0) { count, role in
@@ -512,9 +535,8 @@ final class DunnoStore: ObservableObject {
             value += 5.4 + min(6.0, Double(interestMatches - 1) * 1.7)
         }
 
-        let normalizedActivityGoals = Set(activity.goals.map(DunnoTaxonomy.normalize))
         let goalMatches = profile.goals.reduce(into: 0) { count, goal in
-            if normalizedActivityGoals.contains(DunnoTaxonomy.normalize(goal)) { count += 1 }
+            if metadata.normalizedGoals.contains(DunnoTaxonomy.normalize(goal)) { count += 1 }
         }
         if goalMatches > 0 {
             value += 4.6 + min(3.8, Double(goalMatches - 1) * 1.4)
@@ -659,7 +681,10 @@ final class DunnoStore: ObservableObject {
     /// Queue composition targets roughly 70% strong personal matches, 20% adjacent
     /// discoveries, and 10% true wildcards. Choosing “Surprise me” intentionally raises
     /// the wildcard share. Every lane still obeys Right Now filters and hard exclusions.
-    private func buildRecommendationQueue(from candidates: [RecommendationCandidate]) -> [DunnoActivity] {
+    private func buildRecommendationQueue(
+        from candidates: [RecommendationCandidate],
+        limit: Int?
+    ) -> [DunnoActivity] {
         var strong = candidates.filter { $0.lane == .strong }.sorted { $0.score > $1.score }
         var adjacent = candidates.filter { $0.lane == .adjacent }.sorted { $0.score > $1.score }
         var wildcard = candidates.filter { $0.lane == .wildcard }.sorted(by: wildcardSort)
@@ -674,8 +699,11 @@ final class DunnoStore: ObservableObject {
             wildcard.removeAll { strongIDs.contains($0.activity.id) }
         }
 
+        let outputLimit = min(max(limit ?? candidates.count, 0), candidates.count)
+        guard outputLimit > 0 else { return [] }
+
         var output: [DunnoActivity] = []
-        output.reserveCapacity(candidates.count)
+        output.reserveCapacity(outputLimit)
 
         let wantsSurprise = profile.goals.contains {
             DunnoTaxonomy.normalize($0) == DunnoTaxonomy.normalize("Surprise me")
@@ -685,7 +713,7 @@ final class DunnoStore: ObservableObject {
             : [.strong, .strong, .adjacent, .strong, .strong, .wildcard, .strong, .adjacent, .strong, .strong]
 
         var slot = 0
-        while !strong.isEmpty || !adjacent.isEmpty || !wildcard.isEmpty {
+        while output.count < outputLimit && (!strong.isEmpty || !adjacent.isEmpty || !wildcard.isEmpty) {
             let requested = pattern[slot % pattern.count]
             let picked: RecommendationCandidate?
 
@@ -772,9 +800,9 @@ final class DunnoStore: ObservableObject {
         let durationCount = recent.filter { DurationBand($0) == DurationBand(activity) }.count
         if durationCount >= 3 { value -= 1.8 }
 
-        let signals = DunnoTaxonomy.activitySignals(activity)
+        let signals = metadata(for: activity).signals
         for recentActivity in recent.suffix(2) {
-            let overlap = signals.intersection(DunnoTaxonomy.activitySignals(recentActivity)).count
+            let overlap = signals.intersection(metadata(for: recentActivity).signals).count
             value -= min(2.4, Double(overlap) * 0.32)
         }
 
@@ -788,21 +816,22 @@ final class DunnoStore: ObservableObject {
     }
 
     private func calibrationScore(for activity: DunnoActivity) -> Double {
-        var value = calibrationAffinities["category:\(DunnoTaxonomy.normalize(activity.category.rawValue))"] ?? 0
+        let metadata = metadata(for: activity)
+        var value = calibrationAffinities[metadata.calibrationCategoryKey] ?? 0
 
-        for tag in activity.tags {
-            value += calibrationAffinities["tag:\(DunnoTaxonomy.normalize(tag))"] ?? 0
+        for key in metadata.calibrationTagKeys {
+            value += calibrationAffinities[key] ?? 0
         }
 
-        for goal in activity.goals {
-            value += calibrationAffinities["goal:\(DunnoTaxonomy.normalize(goal))"] ?? 0
+        for key in metadata.calibrationGoalKeys {
+            value += calibrationAffinities[key] ?? 0
         }
 
         return min(max(value, -8), 8)
     }
 
     private func feedbackScore(for activity: DunnoActivity) -> Double {
-        let candidateSignals = DunnoTaxonomy.activitySignals(activity)
+        let candidateSignals = metadata(for: activity).signals
         var categoryPenalty = 0.0
         var similarityPenalty = 0.0
 
@@ -811,7 +840,7 @@ final class DunnoStore: ObservableObject {
                 categoryPenalty += 0.9
             }
 
-            let hiddenSignals = DunnoTaxonomy.activitySignals(hidden)
+            let hiddenSignals = metadata(for: hidden).signals
             let overlap = candidateSignals.intersection(hiddenSignals).count
             similarityPenalty += min(1.15, Double(overlap) * 0.20)
         }
@@ -822,9 +851,34 @@ final class DunnoStore: ObservableObject {
     }
 
     private func deterministicJitter(for activity: DunnoActivity, amplitude: Double) -> Double {
-        let salt = activity.id.unicodeScalars.reduce(0) { ($0 &* 31) &+ Int($1.value) }
+        let salt = metadata(for: activity).jitterSalt
         let mixed = UInt(bitPattern: salt &+ shuffleSeed &* 37)
         return Double(mixed % 10_000) / 10_000.0 * amplitude
+    }
+
+    private func metadata(for activity: DunnoActivity) -> ActivityMetadata {
+        if let cached = activityMetadataCache[activity.id] {
+            return cached
+        }
+
+        let metadata = ActivityMetadata(
+            signals: DunnoTaxonomy.activitySignals(activity),
+            normalizedGoals: Set(activity.goals.map(DunnoTaxonomy.normalize)),
+            calibrationCategoryKey: "category:\(DunnoTaxonomy.normalize(activity.category.rawValue))",
+            calibrationTagKeys: activity.tags.map { "tag:\(DunnoTaxonomy.normalize($0))" },
+            calibrationGoalKeys: activity.goals.map { "goal:\(DunnoTaxonomy.normalize($0))" },
+            jitterSalt: activity.id.unicodeScalars.reduce(0) { ($0 &* 31) &+ Int($1.value) },
+            searchableText: ([
+                activity.title,
+                activity.hook,
+                activity.description,
+                activity.category.rawValue
+            ] + activity.tags + activity.goals)
+                .joined(separator: " ")
+                .lowercased()
+        )
+        activityMetadataCache[activity.id] = metadata
+        return metadata
     }
 
     private func adjustAffinity(_ key: String, by amount: Double) {

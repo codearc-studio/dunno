@@ -707,7 +707,8 @@ struct HomeView: View {
         guard queue.count < 4 else { return }
 
         let existing = Set(queue.map(\.id))
-        let more = store.recommendations().filter {
+        let rankingLimit = min(store.activities.count, sessionDismissedIDs.count + 32)
+        let more = store.recommendations(limit: rankingLimit).filter {
             !existing.contains($0.id) && !sessionDismissedIDs.contains($0.id)
         }
         queue.append(contentsOf: more.prefix(8))
@@ -716,7 +717,12 @@ struct HomeView: View {
     private func reloadQueue() {
         thresholdIntent = nil
         isTransitioning = false
-        queue = Array(store.recommendations().filter { !sessionDismissedIDs.contains($0.id) }.prefix(16))
+        let rankingLimit = min(store.activities.count, sessionDismissedIDs.count + 32)
+        queue = Array(
+            store.recommendations(limit: rankingLimit)
+                .filter { !sessionDismissedIDs.contains($0.id) }
+                .prefix(16)
+        )
         dragOffset = .zero
         lastRecordedActivityID = nil
         recordFirstIfNeeded()

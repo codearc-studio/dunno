@@ -26,9 +26,7 @@ struct ExploreView: View {
         // Explore is intentional browsing, not the recommendation feed. Long-term
         // "show me less" feedback and Never Repeat only affect suggestions; users can
         // still deliberately find any idea here, including something they have done.
-        return store.activities
-            .filter { $0.category == selectedCategory }
-            .sorted { store.score($0) > store.score($1) }
+        return ranked(store.activities.filter { $0.category == selectedCategory })
     }
 
     var body: some View {
@@ -160,31 +158,24 @@ struct ExploreView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
 
-        return store.activities
-            .filter { activity in
-                let searchable = ([
-                    activity.title,
-                    activity.hook,
-                    activity.description,
-                    activity.category.rawValue
-                ] + activity.tags + activity.goals)
-                    .joined(separator: " ")
-                    .lowercased()
-                return searchable.localizedStandardContains(query)
-            }
-            .sorted { store.score($0) > store.score($1) }
+        let matches = store.activities.filter { activity in
+            store.searchableText(for: activity).localizedStandardContains(query)
+        }
+        return ranked(matches)
     }
 
     private var searchResults: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let matches = searchMatches
+
+        return VStack(alignment: .leading, spacing: 12) {
             DunnoSectionHeader(
-                title: searchMatches.isEmpty ? "no matches" : "results",
-                subtitle: searchMatches.isEmpty ? "Try a broader word or category." : "\(searchMatches.count) ideas"
+                title: matches.isEmpty ? "no matches" : "results",
+                subtitle: matches.isEmpty ? "Try a broader word or category." : "\(matches.count) ideas"
             )
 
-            if !searchMatches.isEmpty {
+            if !matches.isEmpty {
                 LazyVStack(spacing: 9) {
-                    ForEach(searchMatches) { activity in
+                    ForEach(matches) { activity in
                         activityRowButton(activity)
                     }
                 }
@@ -257,6 +248,7 @@ struct ExploreView: View {
 
     private func categoryDetail(_ category: DunnoCategory) -> some View {
         let accent = DunnoTheme.categoryAccent(category)
+        let activities = categoryActivities
 
         return VStack(alignment: .leading, spacing: 18) {
             Button {
@@ -281,14 +273,14 @@ struct ExploreView: View {
                     Text(category.rawValue.lowercased())
                         .font(Font.dunnoRounded(27, weight: .bold))
                         .tracking(-0.3)
-                    Text("\(categoryActivities.count) ideas")
+                    Text("\(activities.count) ideas")
                         .font(Font.dunno(13, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
             }
 
             LazyVStack(spacing: 9) {
-                ForEach(categoryActivities) { activity in
+                ForEach(activities) { activity in
                     activityRowButton(activity)
                 }
             }
@@ -325,7 +317,7 @@ struct ExploreView: View {
         // Ranking is intentionally computed once per meaningful recommendation change.
         // Previously each section recursively recomputed the full O(n²) ranking several
         // times during every body evaluation, which made Explore noticeably stutter.
-        let ranked = store.recommendations(filters: DunnoFilters())
+        let ranked = store.recommendations(filters: DunnoFilters(), limit: 80)
 
         let quick = Array(ranked.filter { $0.maxMinutes <= 20 }.prefix(8))
         var used = Set(quick.map(\.id))
@@ -368,6 +360,15 @@ struct ExploreView: View {
             ActivityRowView(activity: activity)
         }
         .buttonStyle(DunnoPressableStyle())
+    }
+
+    /// Score each activity once before sorting. Calling `store.score` from both sides of
+    /// the comparator recalculated the full preference model O(n log n) times while typing.
+    private func ranked(_ activities: [DunnoActivity]) -> [DunnoActivity] {
+        activities
+            .map { (activity: $0, score: store.score($0)) }
+            .sorted { $0.score > $1.score }
+            .map(\.activity)
     }
 
     private func recommendations(

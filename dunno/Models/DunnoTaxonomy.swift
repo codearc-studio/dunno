@@ -80,13 +80,7 @@ enum DunnoTaxonomy {
 
     static func aliases(for selection: String) -> Set<String> {
         let normalized = normalize(selection)
-        guard let mapped = aliasMap[normalized] else { return [normalized] }
-
-        var output: Set<String> = []
-        for value in mapped {
-            output.insert(normalize(value))
-        }
-        return output
+        return normalizedAliasMap[normalized] ?? [normalized]
     }
  
     static func activitySignals(_ activity: DunnoActivity) -> Set<String> {
@@ -162,6 +156,12 @@ enum DunnoTaxonomy {
         "organizing": ["organizing"],
         "relaxing and cozy": ["relaxation", "music", "reader"]
     ]
+
+    /// Alias sets are immutable taxonomy data. Normalizing them for every activity score
+    /// multiplied the same string work thousands of times during each recommendation pass.
+    private static let normalizedAliasMap: [String: Set<String>] = aliasMap.mapValues {
+        Set($0.map(normalize))
+    }
 
     private static let legacyInterestMap: [String: String] = [
         "Building things": "Building & making",

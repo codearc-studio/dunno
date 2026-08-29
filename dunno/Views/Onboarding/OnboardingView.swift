@@ -162,16 +162,14 @@ struct OnboardingView: View {
             subtitle: "The subjects that can actually steal your attention.",
             actionTitle: store.profile.interests.isEmpty ? "skip for now" : "continue"
         ) {
-            DunnoGlassEffectContainer(spacing: 8) {
-                FlowLayout(spacing: 8) {
-                    ForEach(DunnoTaxonomy.interests) { item in
-                        DunnoPill(
-                            title: item.title,
-                            systemImage: nil,
-                            isSelected: store.profile.interests.contains(item.title)
-                        ) {
-                            store.toggleInterest(item.title)
-                        }
+            FlowLayout(spacing: 8) {
+                ForEach(DunnoTaxonomy.interests) { item in
+                    DunnoPill(
+                        title: item.title,
+                        systemImage: nil,
+                        isSelected: store.profile.interests.contains(item.title)
+                    ) {
+                        store.toggleInterest(item.title)
                     }
                 }
             }
@@ -336,7 +334,9 @@ struct OnboardingView: View {
     private func makeCalibrationQueue() -> [DunnoActivity] {
         // Calibration should feel like a fresh taste sample, not a quiz about ideas the
         // user already finished. Fall back to the full ranked pool only if needed.
-        let allRanked = store.recommendations(filters: DunnoFilters())
+        // Calibration only needs a varied first page. Building a fully diversified queue
+        // for the entire 1,000+ idea catalog here made the continue button appear frozen.
+        let allRanked = store.recommendations(filters: DunnoFilters(), limit: 48)
         let freshRanked = allRanked.filter { !store.isCompleted($0) }
         let ranked = freshRanked.count >= 8 ? freshRanked : allRanked
         var picked: [DunnoActivity] = []

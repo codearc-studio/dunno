@@ -176,9 +176,7 @@ struct FiltersView: View {
                 .font(Font.dunno(16, weight: .semibold))
                 .foregroundStyle(.primary)
 
-            DunnoGlassEffectContainer(spacing: 8) {
-                content()
-            }
+            content()
         }
     }
 }
