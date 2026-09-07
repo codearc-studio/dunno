@@ -162,6 +162,23 @@ struct DunnoActivity: Identifiable, Hashable, Codable {
     }
 }
 
+
+enum DunnoDaypart: String, CaseIterable, Hashable {
+    case morning
+    case daytime
+    case evening
+    case night
+
+    static func current(date: Date = Date(), calendar: Calendar = .current) -> DunnoDaypart {
+        switch calendar.component(.hour, from: date) {
+        case 5..<11: return .morning
+        case 11..<17: return .daytime
+        case 17..<21: return .evening
+        default: return .night
+        }
+    }
+}
+
 struct DunnoFilters: Equatable {
     var maxMinutes: Int?
     var energy: DunnoEnergy?

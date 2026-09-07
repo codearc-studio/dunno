@@ -107,9 +107,11 @@ struct FiltersView: View {
                             .buttonStyle(DunnoPressableStyle())
                         }
                     }
+                    .frame(maxWidth: 760, alignment: .leading)
                     .padding(.horizontal, 20)
                     .padding(.top, 12)
                     .padding(.bottom, 98)
+                    .frame(maxWidth: .infinity)
                 }
             }
             .toolbar {
@@ -123,8 +125,10 @@ struct FiltersView: View {
             .safeAreaInset(edge: .bottom) {
                 Button("done") { dismiss() }
                     .buttonStyle(DunnoPrimaryButtonStyle())
+                    .frame(maxWidth: 720)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
             }
         }
     }

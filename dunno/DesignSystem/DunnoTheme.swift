@@ -581,6 +581,7 @@ struct DunnoPill: View {
     var action: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: action) {
@@ -592,10 +593,12 @@ struct DunnoPill: View {
 
                 Text(title.lowercased())
                     .font(Font.dunno(14, weight: .semibold))
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .foregroundStyle(isSelected ? Color.white : Color.primary)
             .padding(.horizontal, 14)
+            .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 9 : 0)
             .frame(minHeight: 42)
             .background {
                 Capsule()
@@ -613,6 +616,16 @@ struct DunnoPill: View {
                             : Color.primary.opacity(colorScheme == .dark ? 0.09 : 0.075),
                         lineWidth: 0.8
                     )
+            }
+            .overlay(alignment: .topTrailing) {
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.white, DunnoTheme.selectedControlFill(for: colorScheme))
+                        .offset(x: 3, y: -3)
+                        .accessibilityHidden(true)
+                }
             }
         }
         .buttonStyle(DunnoPressableStyle())

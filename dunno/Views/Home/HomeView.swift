@@ -1,4 +1,5 @@
 import SwiftUI
+import TipKit
 import Foundation
 import UIKit
 
@@ -25,10 +26,12 @@ struct HomeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var queue: [DunnoActivity] = []
     @State private var dragOffset: CGSize = .zero
     @State private var selectedActivity: DunnoActivity?
+    @State private var sharingActivity: DunnoActivity?
     @State private var selectedWasDoIt = false
     @State private var showingFilters = false
     @State private var sessionDismissedIDs: Set<String> = []
@@ -38,6 +41,10 @@ struct HomeView: View {
     @State private var pendingReplacement: DunnoActivity?
     @State private var showingReplaceConfirmation = false
     @State private var lastRecordedActivityID: String?
+    @State private var queueNeedsRefresh = false
+    @State private var recommendationPool: [DunnoActivity] = []
+    @State private var recommendationPoolCursor = 0
+    @State private var reloadAnimationSeed = 0
 
     private let swipeThreshold: CGFloat = 96
 
@@ -56,6 +63,11 @@ struct HomeView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(item: $sharingActivity) { activity in
+            DunnoShareView(activity: activity)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showingFilters) {
             FiltersView()
                 .environmentObject(store)
@@ -68,12 +80,14 @@ struct HomeView: View {
             if queue.isEmpty { reloadQueue() }
         }
         .onChange(of: store.shuffleSeed) { _, _ in
-            reloadQueue()
+            requestQueueRefresh()
         }
         .onChange(of: store.filters) { _, _ in
             sessionDismissedIDs.removeAll()
             clearUndo()
-            reloadQueue()
+            // Filters are edited in a sheet. Do not rescore the full catalog on every tap;
+            // wait until the sheet closes, then rebuild once with the final choices.
+            requestQueueRefresh()
         }
         .onChange(of: store.currentActivityID) { _, newID in
             guard let newID, !isTransitioning else { return }
@@ -87,14 +101,21 @@ struct HomeView: View {
             if active {
                 store.expireCurrentActivityIfNeeded()
                 store.expireFiltersIfNeeded()
+                if queueNeedsRefresh { reloadQueue() }
                 recordFirstIfNeeded()
             }
         }
         .onChange(of: showingFilters) { _, showing in
-            if !showing { recordFirstIfNeeded() }
+            if !showing {
+                if queueNeedsRefresh { reloadQueue() }
+                recordFirstIfNeeded()
+            }
         }
         .onChange(of: selectedActivity) { _, activity in
-            if activity == nil { recordFirstIfNeeded() }
+            if activity == nil {
+                if queueNeedsRefresh { reloadQueue() }
+                recordFirstIfNeeded()
+            }
         }
         .alert("Switch what you're doing?", isPresented: $showingReplaceConfirmation, presenting: pendingReplacement) { activity in
             Button("Keep current", role: .cancel) {
@@ -113,9 +134,67 @@ struct HomeView: View {
         }
     }
 
+    private var usesWideLayout: Bool {
+        horizontalSizeClass == .regular && !dynamicTypeSize.isAccessibilitySize
+    }
+
     @ViewBuilder
     private var homeLayout: some View {
-        if dynamicTypeSize.isAccessibilitySize {
+        if usesWideLayout {
+            GeometryReader { proxy in
+                let railWidth = min(max(proxy.size.width * 0.31, 290), 350)
+
+                HStack(alignment: .center, spacing: 34) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        header
+
+                        rightNowSummary
+                            .padding(.top, 16)
+
+                        Spacer(minLength: 26)
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("pick the one that feels right")
+                                .font(Font.dunnoRounded(20, weight: .bold))
+                                .tracking(-0.2)
+
+                            Text("Swipe the card, use the buttons, or press ⌘R for a different deal.")
+                                .font(Font.dunno(13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineSpacing(2)
+                        }
+
+                        Spacer(minLength: 18)
+
+                        if let undoState {
+                            undoToast(undoState)
+                                .padding(.bottom, 12)
+                                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                        }
+
+                        TipView(DunnoNotNowTip())
+                            .padding(.bottom, 10)
+
+                        controls
+                    }
+                    .frame(width: railWidth, alignment: .leading)
+
+                    VStack(spacing: 18) {
+                        cardStack
+                            .frame(maxWidth: 610)
+
+                        Text("swipe left for not now · right for do it")
+                            .font(Font.dunno(11.5, weight: .medium))
+                            .foregroundStyle(DunnoTheme.tertiaryText(for: colorScheme))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .frame(maxWidth: 1040, maxHeight: .infinity)
+                .padding(.horizontal, 34)
+                .padding(.vertical, 26)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        } else if dynamicTypeSize.isAccessibilitySize {
             ScrollView {
                 VStack(spacing: 16) {
                     header
@@ -127,6 +206,7 @@ struct HomeView: View {
                             .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     }
 
+                    TipView(DunnoNotNowTip())
                     controls
                 }
                 .padding(.horizontal, 20)
@@ -158,6 +238,10 @@ struct HomeView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
 
+                TipView(DunnoNotNowTip())
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 9)
+
                 controls
                     .padding(.horizontal, 20)
                     .padding(.bottom, 13)
@@ -172,9 +256,7 @@ struct HomeView: View {
             Spacer()
 
             Button {
-                sessionDismissedIDs.removeAll()
-                clearUndo()
-                store.shuffle()
+                dealDifferentIdeas()
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } label: {
                 shuffleIcon
@@ -184,6 +266,7 @@ struct HomeView: View {
                     .dunnoGlassCapsule(interactive: true)
             }
             .buttonStyle(DunnoPressableStyle())
+            .keyboardShortcut("r", modifiers: [.command])
             .disabled(isTransitioning)
             .accessibilityLabel("Give me different ideas")
         }
@@ -193,7 +276,7 @@ struct HomeView: View {
     private var shuffleIcon: some View {
         if #available(iOS 18.0, *) {
             Image(systemName: "arrow.clockwise")
-                .symbolEffect(.rotate, value: store.shuffleSeed)
+                .symbolEffect(.rotate, value: reloadAnimationSeed)
         } else {
             Image(systemName: "arrow.clockwise")
         }
@@ -267,6 +350,7 @@ struct HomeView: View {
                     let backXOffset = CGFloat(index) * 4
 
                     ActivityCardView(activity: activity, showsContent: index == 0)
+                        .frame(minHeight: usesWideLayout ? 450 : nil)
                         .id(activity.id)
                         .overlay {
                             if index == 0 { swipeCardTint }
@@ -314,7 +398,7 @@ struct HomeView: View {
                 }
             }
         }
-        .frame(maxHeight: dynamicTypeSize.isAccessibilitySize ? 560 : 440)
+        .frame(maxHeight: dynamicTypeSize.isAccessibilitySize ? 560 : (usesWideLayout ? 500 : 440))
         // Drag-driven transforms should track the finger directly. Animating the entire
         // stack on every gesture update made the card feel delayed and forced SwiftUI to
         // continuously interpolate expensive effects. Snap/dismiss animations are applied
@@ -375,9 +459,7 @@ struct HomeView: View {
                 }
             } else {
                 Button {
-                    sessionDismissedIDs.removeAll()
-                    clearUndo()
-                    store.shuffle()
+                    dealDifferentIdeas()
                 } label: {
                     Label("mix it up", systemImage: "arrow.clockwise")
                         .font(Font.dunno(14, weight: .semibold))
@@ -411,6 +493,14 @@ struct HomeView: View {
 
     private func quickActions(for activity: DunnoActivity) -> some View {
         Menu {
+            Button {
+                sharingActivity = activity
+            } label: {
+                Label("share this", systemImage: "square.and.arrow.up")
+            }
+
+            Divider()
+
             if !store.isCompleted(activity) {
                 Button {
                     store.toggleSaved(activity)
@@ -707,24 +797,119 @@ struct HomeView: View {
         guard queue.count < 4 else { return }
 
         let existing = Set(queue.map(\.id))
-        let rankingLimit = min(store.activities.count, sessionDismissedIDs.count + 32)
-        let more = store.recommendations(limit: rankingLimit).filter {
-            !existing.contains($0.id) && !sessionDismissedIDs.contains($0.id)
+        let needed = 8
+        var additions: [DunnoActivity] = []
+
+        while additions.count < needed && recommendationPoolCursor < recommendationPool.count {
+            let candidate = recommendationPool[recommendationPoolCursor]
+            recommendationPoolCursor += 1
+
+            guard !existing.contains(candidate.id),
+                  !sessionDismissedIDs.contains(candidate.id),
+                  candidate.id != store.currentActivityID else { continue }
+            additions.append(candidate)
         }
-        queue.append(contentsOf: more.prefix(8))
+
+        queue.append(contentsOf: additions)
+
+        // A normal session pool is intentionally much larger than the visible queue, so this
+        // should be rare. Rebuild only when the pool is actually exhausted instead of doing a
+        // full 1,010-item rerank every few swipes.
+        if queue.count < 4 && recommendationPoolCursor >= recommendationPool.count {
+            rebuildRecommendationPool()
+            let refillExisting = Set(queue.map(\.id))
+            var refillCount = 0
+
+            while refillCount < needed && recommendationPoolCursor < recommendationPool.count {
+                let candidate = recommendationPool[recommendationPoolCursor]
+                recommendationPoolCursor += 1
+
+                guard !refillExisting.contains(candidate.id),
+                      !sessionDismissedIDs.contains(candidate.id),
+                      candidate.id != store.currentActivityID else { continue }
+                queue.append(candidate)
+                refillCount += 1
+            }
+        }
+    }
+
+    private func requestQueueRefresh() {
+        guard isActive, selectedActivity == nil, !showingFilters, !isTransitioning else {
+            queueNeedsRefresh = true
+            return
+        }
+        reloadQueue()
+    }
+
+    /// Rebuilds the ranked session pool only when recommendation inputs actually changed.
+    /// The reload button itself never calls this, so tapping it stays instant.
+    private func rebuildRecommendationPool() {
+        let rankingLimit = min(store.activities.count, max(128, sessionDismissedIDs.count + 64))
+        recommendationPool = store.recommendations(limit: rankingLimit)
+            .filter { !sessionDismissedIDs.contains($0.id) && $0.id != store.currentActivityID }
+        recommendationPoolCursor = 0
+        DunnoSystemSurfaceBridge.publishSuggestions(Array(recommendationPool.prefix(12)))
     }
 
     private func reloadQueue() {
+        queueNeedsRefresh = false
         thresholdIntent = nil
         isTransitioning = false
-        let rankingLimit = min(store.activities.count, sessionDismissedIDs.count + 32)
-        queue = Array(
-            store.recommendations(limit: rankingLimit)
-                .filter { !sessionDismissedIDs.contains($0.id) }
-                .prefix(16)
-        )
+        rebuildRecommendationPool()
+        dealFromRecommendationPool(resetExposureRecord: true)
+    }
+
+    /// The visible reload/mix action deals another set from an already-ranked pool rather than
+    /// rescoring and sorting the entire catalog on the main actor. When the pool wraps, a cheap
+    /// local shuffle changes the order without touching Dunno's learned ranking.
+    private func dealDifferentIdeas() {
+        sessionDismissedIDs.removeAll()
+        clearUndo()
+        reloadAnimationSeed += 1
+
+        if recommendationPool.isEmpty {
+            rebuildRecommendationPool()
+        }
+
+        if recommendationPoolCursor >= recommendationPool.count {
+            recommendationPool.shuffle()
+            recommendationPoolCursor = 0
+        }
+
+        dealFromRecommendationPool(resetExposureRecord: true)
+    }
+
+    private func dealFromRecommendationPool(resetExposureRecord: Bool) {
+        guard !recommendationPool.isEmpty else {
+            queue = []
+            dragOffset = .zero
+            if resetExposureRecord { lastRecordedActivityID = nil }
+            return
+        }
+
+        var next: [DunnoActivity] = []
+        var attempts = 0
+        let maxAttempts = recommendationPool.count * 2
+
+        while next.count < 16 && attempts < maxAttempts {
+            if recommendationPoolCursor >= recommendationPool.count {
+                recommendationPool.shuffle()
+                recommendationPoolCursor = 0
+            }
+
+            let candidate = recommendationPool[recommendationPoolCursor]
+            recommendationPoolCursor += 1
+            attempts += 1
+
+            guard !sessionDismissedIDs.contains(candidate.id),
+                  candidate.id != store.currentActivityID,
+                  !next.contains(where: { $0.id == candidate.id }) else { continue }
+            next.append(candidate)
+        }
+
+        queue = next
         dragOffset = .zero
-        lastRecordedActivityID = nil
+        if resetExposureRecord { lastRecordedActivityID = nil }
         recordFirstIfNeeded()
     }
 

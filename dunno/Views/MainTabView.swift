@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import StoreKit
 
 struct MainTabView: View {
     private enum Tab: Hashable {
@@ -10,33 +11,124 @@ struct MainTabView: View {
     }
 
     @EnvironmentObject private var store: DunnoStore
+    @EnvironmentObject private var nearby: DunnoNearbyService
+    @EnvironmentObject private var together: DunnoTogetherCoordinator
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.requestReview) private var requestReview
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: Tab = .forYou
     @State private var accessoryActivity: DunnoActivity?
+    @State private var reviewRequestTask: Task<Void, Never>?
 
-    @ViewBuilder
     var body: some View {
-        if #available(iOS 26.1, *) {
-            modernTabView
-                .tabViewBottomAccessory(isEnabled: store.currentActivity != nil) {
-                    doingNowAccessory
-                }
-                .sheet(item: $accessoryActivity) { activity in
-                    activitySheet(activity)
-                }
-        } else if #available(iOS 26.0, *) {
-            modernTabView
-                .tabViewBottomAccessory {
-                    doingNowAccessory
-                }
-                .sheet(item: $accessoryActivity) { activity in
-                    activitySheet(activity)
-                }
-        } else {
-            legacyTabView
-                .sheet(item: $accessoryActivity) { activity in
-                    activitySheet(activity)
-                }
+        Group {
+            if #available(iOS 26.1, *) {
+                modernTabView
+                    .tabViewBottomAccessory(isEnabled: store.currentActivity != nil) {
+                        doingNowAccessory
+                    }
+                    .sheet(item: $accessoryActivity) { activity in
+                        activitySheet(activity)
+                    }
+            } else if #available(iOS 26.0, *) {
+                modernTabView
+                    .tabViewBottomAccessory {
+                        doingNowAccessory
+                    }
+                    .sheet(item: $accessoryActivity) { activity in
+                        activitySheet(activity)
+                    }
+            } else {
+                legacyTabView
+                    .sheet(item: $accessoryActivity) { activity in
+                        activitySheet(activity)
+                    }
+            }
+        }
+        .sheet(item: $store.incomingShare) { incoming in
+            ActivityDetailView(activity: incoming.activity, sharedMode: incoming.mode)
+                .environmentObject(store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $store.externalActivity) { activity in
+            ActivityDetailView(activity: activity)
+                .environmentObject(store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: Binding(
+            get: { together.isActive },
+            set: { if !$0 { together.leave() } }
+        )) {
+            DunnoTogetherView()
+                .environmentObject(store)
+                .environmentObject(together)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .overlay(alignment: .bottom) {
+            if let activity = store.completionFeedbackActivity {
+                CompletionFeedbackCard(activity: activity)
+                    .environmentObject(store)
+                    .frame(maxWidth: 520)
+                    .padding(.horizontal, 14)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 72)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(50)
+            }
+        }
+        .animation(reduceMotion ? nil : DunnoMotion.snappy, value: store.completionFeedbackActivityID)
+        .onAppear {
+            store.syncCurrentActivityFromPersistence()
+            store.repairCurrentSystemSurfacesIfNeeded()
+            store.updateNearbyAvailability(nearby.availableKinds)
+            nearby.refreshIfAuthorized()
+            scheduleReviewRequestIfAppropriate()
+        }
+        .onChange(of: nearby.availableKinds) { _, kinds in
+            store.updateNearbyAvailability(kinds)
+        }
+        .onChange(of: store.reviewRequestPending) { _, _ in scheduleReviewRequestIfAppropriate() }
+        .onChange(of: store.completionFeedbackActivityID) { _, _ in scheduleReviewRequestIfAppropriate() }
+        .onChange(of: selection) { _, _ in scheduleReviewRequestIfAppropriate() }
+        .onChange(of: accessoryActivity?.id) { _, _ in scheduleReviewRequestIfAppropriate() }
+        .onChange(of: store.incomingShare?.id) { _, _ in scheduleReviewRequestIfAppropriate() }
+        .onChange(of: store.externalActivity?.id) { _, _ in scheduleReviewRequestIfAppropriate() }
+        .onChange(of: together.isActive) { _, _ in scheduleReviewRequestIfAppropriate() }
+        .onDisappear {
+            reviewRequestTask?.cancel()
+            reviewRequestTask = nil
+        }
+    }
+
+    private func scheduleReviewRequestIfAppropriate() {
+        reviewRequestTask?.cancel()
+        reviewRequestTask = nil
+
+        guard store.reviewRequestPending,
+              store.completionFeedbackActivity == nil,
+              selection == .forYou,
+              accessoryActivity == nil,
+              store.incomingShare == nil,
+              store.externalActivity == nil,
+              !together.isActive else { return }
+
+        reviewRequestTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled,
+                  store.reviewRequestPending,
+                  store.completionFeedbackActivity == nil,
+                  selection == .forYou,
+                  accessoryActivity == nil,
+                  store.incomingShare == nil,
+                  store.externalActivity == nil,
+                  !together.isActive else { return }
+
+            store.markReviewRequestAttempted()
+            requestReview()
+            reviewRequestTask = nil
         }
     }
 
@@ -71,8 +163,10 @@ struct MainTabView: View {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
                 )
+                .frame(maxWidth: 620)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 56)
+                .frame(maxWidth: .infinity)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(20)
             }
@@ -93,7 +187,7 @@ struct MainTabView: View {
                     Text("for you")
                 }
 
-            ExploreView()
+            ExploreView(isActive: selection == .explore)
                 .tag(Tab.explore)
                 .tabItem {
                     tabIcon(
@@ -163,6 +257,82 @@ struct MainTabView: View {
                 .brightness(-0.22)
                 .opacity(0.62)
         }
+    }
+}
+
+private struct CompletionFeedbackCard: View {
+    @EnvironmentObject private var store: DunnoStore
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showingNote = false
+
+    let activity: DunnoActivity
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("worth it?")
+                        .font(Font.dunnoRounded(18, weight: .bold))
+                    Text(activity.title)
+                        .font(Font.dunno(12.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 6)
+
+                Button { store.dismissCompletionFeedback() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Skip feedback")
+            }
+
+            HStack(spacing: 9) {
+                feedbackButton("yeah", symbol: "hand.thumbsup.fill", positive: true)
+                feedbackButton("not really", symbol: "hand.thumbsdown.fill", positive: false)
+            }
+
+            Button {
+                showingNote = true
+            } label: {
+                Label(store.note(for: activity).isEmpty ? "add a private note" : "edit private note", systemImage: "note.text")
+                    .font(Font.dunno(12.5, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(15)
+        .dunnoGlassPanel(cornerRadius: 22, tint: Color.dunnoPurple.opacity(0.055), interactive: true)
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.26 : 0.10), radius: 22, y: 10)
+        .accessibilityElement(children: .contain)
+        .sheet(isPresented: $showingNote) {
+            DunnoActivityNoteEditor(activity: activity, existingNote: store.note(for: activity))
+                .environmentObject(store)
+                .presentationDetents([.medium, .large])
+        }
+    }
+
+    private func feedbackButton(_ title: String, symbol: String, positive: Bool) -> some View {
+        Button {
+            store.submitCompletionFeedback(for: activity, positive: positive)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(Font.dunno(13, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 42)
+                .foregroundStyle(positive ? DunnoTheme.tealText(for: colorScheme) : DunnoTheme.roseText(for: colorScheme))
+                .background(
+                    (positive ? Color.dunnoTeal : Color.dunnoRose).opacity(0.09),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                )
+        }
+        .buttonStyle(DunnoPressableStyle())
     }
 }
 
@@ -239,7 +409,7 @@ private struct DoingNowAccessory: View {
                 Image(systemName: "checkmark")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(DunnoTheme.tealText(for: colorScheme))
-                    .frame(width: 34, height: 34)
+                    .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -250,7 +420,7 @@ private struct DoingNowAccessory: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -303,7 +473,7 @@ private struct LegacyDoingNowBar: View {
                 Image(systemName: "checkmark")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(DunnoTheme.tealText(for: colorScheme))
-                    .frame(width: 34, height: 34)
+                    .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -313,7 +483,7 @@ private struct LegacyDoingNowBar: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)

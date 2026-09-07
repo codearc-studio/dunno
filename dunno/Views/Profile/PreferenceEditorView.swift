@@ -1,8 +1,14 @@
 import SwiftUI
+import UIKit
 
 struct PreferenceEditorView: View {
     @EnvironmentObject private var store: DunnoStore
     @Environment(\.dismiss) private var dismiss
+
+    @State private var draftRoles: Set<String> = []
+    @State private var draftInterests: Set<String> = []
+    @State private var draftGoals: Set<String> = []
+    @State private var loadedDraft = false
 
     var body: some View {
         NavigationStack {
@@ -25,44 +31,51 @@ struct PreferenceEditorView: View {
                         editorSection(
                             "sounds like you",
                             values: DunnoTaxonomy.roles.map(\.title),
-                            selected: store.profile.roles,
-                            toggle: store.toggleRole
+                            selected: draftRoles,
+                            toggle: { toggle($0, in: $draftRoles) }
                         )
 
                         editorSection(
                             "you're into",
                             values: DunnoTaxonomy.interests.map(\.title),
-                            selected: store.profile.interests,
-                            toggle: store.toggleInterest
+                            selected: draftInterests,
+                            toggle: { toggle($0, in: $draftInterests) }
                         )
 
                         editorSection(
                             "what dunno should find",
                             values: DunnoTaxonomy.goals.map(\.title),
-                            selected: store.profile.goals,
-                            toggle: store.toggleGoal
+                            selected: draftGoals,
+                            toggle: { toggle($0, in: $draftGoals) }
                         )
                     }
+                    .frame(maxWidth: 780, alignment: .leading)
                     .padding(.horizontal, 20)
                     .padding(.top, 14)
                     .padding(.bottom, 28)
+                    .frame(maxWidth: .infinity)
                 }
             }
             .navigationTitle("preferences")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("done") { dismiss() }
-                        .font(Font.dunno(15, weight: .semibold))
+                    Button("done") {
+                        commitDraft()
+                        dismiss()
+                    }
+                    .font(Font.dunno(15, weight: .semibold))
                 }
             }
         }
+        .onAppear(perform: loadDraftIfNeeded)
+        .onDisappear(perform: commitDraft)
     }
 
     private func editorSection(
         _ title: String,
         values: [String],
-        selected: [String],
+        selected: Set<String>,
         toggle: @escaping (String) -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -80,5 +93,34 @@ struct PreferenceEditorView: View {
                 }
             }
         }
+    }
+
+    private func loadDraftIfNeeded() {
+        guard !loadedDraft else { return }
+        draftRoles = Set(store.profile.roles)
+        draftInterests = Set(store.profile.interests)
+        draftGoals = Set(store.profile.goals)
+        loadedDraft = true
+    }
+
+    private func commitDraft() {
+        guard loadedDraft else { return }
+
+        store.updatePreferences(
+            roles: DunnoTaxonomy.roles.map(\.title).filter(draftRoles.contains),
+            interests: DunnoTaxonomy.interests.map(\.title).filter(draftInterests.contains),
+            goals: DunnoTaxonomy.goals.map(\.title).filter(draftGoals.contains)
+        )
+    }
+
+    private func toggle(_ value: String, in selection: Binding<Set<String>>) {
+        var updated = selection.wrappedValue
+        if updated.contains(value) {
+            updated.remove(value)
+        } else {
+            updated.insert(value)
+        }
+        selection.wrappedValue = updated
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 }

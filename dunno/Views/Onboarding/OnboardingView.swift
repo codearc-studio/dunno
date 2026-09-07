@@ -5,9 +5,11 @@ struct OnboardingView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var calibrationIndex = 0
     @State private var calibrationQueue: [DunnoActivity] = []
+    @State private var calibrationSeenIDs: Set<String> = []
     @State private var welcomeVisible = false
 
     var body: some View {
@@ -17,8 +19,10 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 if store.onboardingStep > 0 {
                     progressHeader
+                        .frame(maxWidth: 780)
                         .padding(.horizontal, 22)
                         .padding(.top, 8)
+                        .frame(maxWidth: .infinity)
                         .transition(.opacity)
                 }
 
@@ -62,6 +66,7 @@ struct OnboardingView: View {
                     store.resetCalibration()
                     calibrationQueue = []
                     calibrationIndex = 0
+                    calibrationSeenIDs.removeAll()
                 }
                 store.setOnboardingStep(store.onboardingStep - 1)
             }
@@ -118,7 +123,9 @@ struct OnboardingView: View {
 
             Button("get started") { store.setOnboardingStep(1) }
                 .buttonStyle(DunnoPrimaryButtonStyle())
+                .frame(maxWidth: 520)
                 .padding(.horizontal, 22)
+                .frame(maxWidth: .infinity)
                 .padding(.bottom, 11)
                 .opacity(welcomeVisible ? 1 : 0)
 
@@ -201,6 +208,7 @@ struct OnboardingView: View {
             store.resetCalibration()
             calibrationQueue = makeCalibrationQueue()
             calibrationIndex = 0
+            calibrationSeenIDs.removeAll()
             store.setOnboardingStep(4)
         }
     }
@@ -228,16 +236,20 @@ struct OnboardingView: View {
                     .foregroundStyle(.secondary)
                     .lineSpacing(2)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: 680, alignment: .leading)
             .padding(.horizontal, 22)
             .padding(.top, 18)
+            .frame(maxWidth: .infinity)
 
             Spacer(minLength: 15)
 
             if calibrationIndex < calibrationQueue.count {
                 let activity = calibrationQueue[calibrationIndex]
                 ActivityCardView(activity: activity)
+                    .frame(maxWidth: 620)
                     .padding(.horizontal, 23)
+                    .frame(maxWidth: .infinity)
+                    .onAppear { recordCalibrationExposureIfNeeded(activity) }
                     .frame(maxHeight: 458)
                     .id(activity.id)
                     .transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : 0.985)))
@@ -277,12 +289,16 @@ struct OnboardingView: View {
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)
                 }
+                .frame(maxWidth: 620)
                 .padding(.horizontal, 22)
                 .padding(.bottom, 24)
+                .frame(maxWidth: .infinity)
             } else {
                 Button("show me something") { store.finishOnboarding() }
                     .buttonStyle(DunnoPrimaryButtonStyle())
+                    .frame(maxWidth: 520)
                     .padding(.horizontal, 22)
+                    .frame(maxWidth: .infinity)
                     .padding(.bottom, 24)
             }
         }
@@ -321,6 +337,15 @@ struct OnboardingView: View {
         .buttonStyle(DunnoPressableStyle())
     }
 
+
+    private func recordCalibrationExposureIfNeeded(_ activity: DunnoActivity) {
+        guard calibrationSeenIDs.insert(activity.id).inserted else { return }
+        // The user already saw this exact card during onboarding. Recording that exposure gives
+        // it the same short cooldown as a normal For You impression, so the first app session
+        // feels fresh instead of repeating the vibe-check cards back at them.
+        store.recordShown(activity)
+    }
+
     private func answerCalibration(positive: Bool) {
         guard calibrationIndex < calibrationQueue.count else { return }
         let activity = calibrationQueue[calibrationIndex]
@@ -357,9 +382,15 @@ struct OnboardingView: View {
     }
 
     private var roleColumns: [GridItem] {
-        dynamicTypeSize.isAccessibilitySize
-            ? [GridItem(.flexible())]
-            : [GridItem(.flexible()), GridItem(.flexible())]
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible())]
+        }
+
+        if horizontalSizeClass == .regular {
+            return Array(repeating: GridItem(.flexible(), spacing: 11), count: 3)
+        }
+
+        return [GridItem(.flexible()), GridItem(.flexible())]
     }
 
     private func roleCard(_ title: String, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -473,14 +504,18 @@ struct OnboardingView: View {
                 content()
                 Color.clear.frame(height: 90)
             }
+            .frame(maxWidth: 780, alignment: .leading)
             .padding(.horizontal, 22)
             .padding(.top, 22)
+            .frame(maxWidth: .infinity)
         }
         .safeAreaInset(edge: .bottom) {
             Button(actionTitle, action: action)
                 .buttonStyle(DunnoPrimaryButtonStyle())
+                .frame(maxWidth: 520)
                 .padding(.horizontal, 22)
                 .padding(.vertical, 11)
+                .frame(maxWidth: .infinity)
         }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Combine
 
 @MainActor
@@ -6,10 +7,17 @@ final class DunnoStore: ObservableObject {
     @Published private(set) var profile: DunnoUserProfile
     @Published private(set) var interactions: [String: ActivityInteractionState]
     @Published private(set) var calibrationAffinities: [String: Double]
+    @Published private(set) var behaviorAffinities: [String: Double]
     @Published private(set) var currentActivityID: String?
     @Published private(set) var currentActivityStartedAt: Date?
+    @Published private(set) var currentActivityTimerEndAt: Date?
+    @Published private(set) var collections: [DunnoCollection]
+    @Published var externalActivity: DunnoActivity?
     @Published private(set) var neverRepeatCompleted: Bool
     @Published private(set) var onboardingStep: Int
+    @Published private(set) var reviewRequestPending: Bool
+    @Published private(set) var completionFeedbackActivityID: String?
+    @Published var incomingShare: DunnoIncomingShare?
 
     // Session-only context. These describe what is true right now, not who the user is.
     @Published var filters = DunnoFilters() {
@@ -22,22 +30,48 @@ final class DunnoStore: ObservableObject {
     let activities: [DunnoActivity] = ActivityCatalog.all
 
     private let defaults: UserDefaults
+    private let persistenceWriter: DunnoPersistenceWriter
     private let profileKey = "dunno.profile.v1"
     private let interactionKey = "dunno.interactions.v1"
     private let calibrationKey = "dunno.calibration.v1"
+    private let behaviorAffinityKey = "dunno.behaviorAffinities.v1"
     private let currentActivityIDKey = "dunno.currentActivity.id"
     private let currentActivityDateKey = "dunno.currentActivity.startedAt"
+    private let currentActivityTimerEndKey = "dunno.currentActivity.timerEndAt"
+    private let collectionsKey = "dunno.collections.v1"
     private let neverRepeatCompletedKey = "dunno.settings.neverRepeatCompleted"
     private let onboardingStepKey = "dunno.onboarding.step"
+    private let reviewQualifiedCompletionCountKey = "dunno.review.qualifiedCompletionCount"
+    private let reviewRequestDateKey = "dunno.review.lastRequestDate"
+    private let reviewRequestVersionKey = "dunno.review.lastRequestVersion"
+    private let completionFeedbackPendingKey = "dunno.feedback.pendingActivityID"
 
     private let rightNowLifetime: TimeInterval = 4 * 60 * 60
+    private let reviewRequestCooldown: TimeInterval = 180 * 24 * 60 * 60
+    private let reviewMinimumCompletions = 3
     private var filtersUpdatedAt: Date?
     private var exposureSaveTask: Task<Void, Never>?
     private var activityMetadataCache: [String: ActivityMetadata] = [:]
+    private lazy var activityLookup: [String: DunnoActivity] = Dictionary(
+        uniqueKeysWithValues: activities.map { ($0.id, $0) }
+    )
+    private var savedActivitiesCache: [DunnoActivity]?
+    private var completedActivitiesCache: [DunnoActivity]?
+    private var hiddenActivitiesCache: [DunnoActivity]?
+    private var hiddenFeedbackCache: [HiddenFeedbackSignal]?
+    private var nearbyAvailableKinds: Set<DunnoNearbyKind> = []
+
+    private struct HiddenFeedbackSignal {
+        let category: DunnoCategory
+        let signals: Set<String>
+    }
 
     private struct ActivityMetadata {
         let signals: Set<String>
         let normalizedGoals: Set<String>
+        let preferredDayparts: Set<DunnoDaypart>
+        let strictDaypart: Bool
+        let nearbyKind: DunnoNearbyKind?
         let calibrationCategoryKey: String
         let calibrationTagKeys: [String]
         let calibrationGoalKeys: [String]
@@ -50,6 +84,7 @@ final class DunnoStore: ObservableObject {
         runDiagnostics: Bool = ProcessInfo.processInfo.arguments.contains("-DunnoRunDiagnostics")
     ) {
         self.defaults = defaults
+        self.persistenceWriter = DunnoPersistenceWriter(defaults: defaults)
 
         var loadedProfile = Self.decode(DunnoUserProfile.self, from: defaults.data(forKey: profileKey)) ?? .empty
         loadedProfile.roles = Self.sanitizedSelections(
@@ -68,12 +103,19 @@ final class DunnoStore: ObservableObject {
 
         self.interactions = Self.decode([String: ActivityInteractionState].self, from: defaults.data(forKey: interactionKey)) ?? [:]
         self.calibrationAffinities = Self.decode([String: Double].self, from: defaults.data(forKey: calibrationKey)) ?? [:]
+        self.behaviorAffinities = Self.decode([String: Double].self, from: defaults.data(forKey: behaviorAffinityKey)) ?? [:]
         self.currentActivityID = defaults.string(forKey: currentActivityIDKey)
         self.currentActivityStartedAt = defaults.object(forKey: currentActivityDateKey) as? Date
+        self.currentActivityTimerEndAt = defaults.object(forKey: currentActivityTimerEndKey) as? Date
+        self.collections = Self.decode([DunnoCollection].self, from: defaults.data(forKey: collectionsKey)) ?? []
+        self.externalActivity = nil
         self.neverRepeatCompleted = defaults.bool(forKey: neverRepeatCompletedKey)
         self.onboardingStep = loadedProfile.onboardingComplete
             ? 0
             : min(max(defaults.integer(forKey: onboardingStepKey), 0), 4)
+        self.reviewRequestPending = false
+        self.completionFeedbackActivityID = defaults.string(forKey: completionFeedbackPendingKey)
+        self.incomingShare = nil
 
         sanitizePersistedState()
         expireCurrentActivityIfNeeded()
@@ -94,34 +136,117 @@ final class DunnoStore: ObservableObject {
     // MARK: - Library state
 
     var savedActivities: [DunnoActivity] {
-        activities
+        if let savedActivitiesCache { return savedActivitiesCache }
+        let result = activities
             .filter {
                 let state = interactions[$0.id]
                 return state?.isSaved == true && state?.isCompleted != true && state?.notForMe == 0
             }
             .sorted { interactionDate(for: $0, kind: .saved) > interactionDate(for: $1, kind: .saved) }
+        savedActivitiesCache = result
+        return result
     }
 
     var completedActivities: [DunnoActivity] {
+        if let completedActivitiesCache { return completedActivitiesCache }
         // Did It is history, so an idea stays here even if the user later asks Dunno
         // to stop suggesting similar things.
-        activities
+        let result = activities
             .filter { interactions[$0.id]?.isCompleted == true }
             .sorted { interactionDate(for: $0, kind: .completed) > interactionDate(for: $1, kind: .completed) }
+        completedActivitiesCache = result
+        return result
     }
 
     var hiddenActivities: [DunnoActivity] {
-        activities
+        if let hiddenActivitiesCache { return hiddenActivitiesCache }
+        let result = activities
             .filter { isNotInterested($0) }
             .sorted {
                 (interactions[$0.id]?.lastShown ?? .distantPast) >
                 (interactions[$1.id]?.lastShown ?? .distantPast)
             }
+        hiddenActivitiesCache = result
+        return result
     }
 
     var currentActivity: DunnoActivity? {
         guard let currentActivityID else { return nil }
-        return activities.first { $0.id == currentActivityID }
+        return activityLookup[currentActivityID]
+    }
+
+    func activity(id: String) -> DunnoActivity? {
+        activityLookup[id]
+    }
+
+    func presentActivity(id: String) {
+        externalActivity = activity(id: id)
+    }
+
+    // MARK: - Collections + private notes
+
+    func activities(in collection: DunnoCollection) -> [DunnoActivity] {
+        let ids = Set(collection.activityIDs)
+        return savedActivities.filter { ids.contains($0.id) }
+    }
+
+    @discardableResult
+    func createCollection(named rawName: String) -> DunnoCollection? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let collection = DunnoCollection(name: name)
+        collections.append(collection)
+        saveCollections()
+        return collection
+    }
+
+    func renameCollection(_ collection: DunnoCollection, to rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let index = collections.firstIndex(where: { $0.id == collection.id }) else { return }
+        collections[index].name = name
+        saveCollections()
+    }
+
+    func deleteCollection(_ collection: DunnoCollection) {
+        collections.removeAll { $0.id == collection.id }
+        saveCollections()
+    }
+
+    func isInCollection(_ activity: DunnoActivity, collection: DunnoCollection) -> Bool {
+        collections.first(where: { $0.id == collection.id })?.activityIDs.contains(activity.id) == true
+    }
+
+    func setActivity(_ activity: DunnoActivity, in collection: DunnoCollection, included: Bool) {
+        guard let index = collections.firstIndex(where: { $0.id == collection.id }) else { return }
+
+        if included {
+            var state = interactions[activity.id] ?? ActivityInteractionState()
+            if !state.isCompleted && !state.isSaved {
+                state.isSaved = true
+                state.savedAt = Date()
+                interactions[activity.id] = state
+                invalidateLibraryCaches()
+                saveInteractions()
+            }
+            if !collections[index].activityIDs.contains(activity.id) {
+                collections[index].activityIDs.append(activity.id)
+            }
+        } else {
+            collections[index].activityIDs.removeAll { $0 == activity.id }
+        }
+        saveCollections()
+    }
+
+    func note(for activity: DunnoActivity) -> String {
+        interactions[activity.id]?.note ?? ""
+    }
+
+    func setNote(_ rawNote: String, for activity: DunnoActivity) {
+        var state = interactions[activity.id] ?? ActivityInteractionState()
+        let trimmed = rawNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.note = trimmed.isEmpty ? nil : String(trimmed.prefix(1500))
+        interactions[activity.id] = state
+        saveInteractions()
     }
 
     // MARK: - Profile + onboarding
@@ -140,6 +265,28 @@ final class DunnoStore: ObservableObject {
 
     func toggleGoal(_ value: String) {
         profile.goals.toggle(value)
+        saveProfile()
+        shuffleSeed += 1
+    }
+
+    /// Preferences are edited as a local draft in the picker and committed once when the
+    /// user leaves. That keeps rapid taps responsive and avoids reranking the whole catalog
+    /// for every individual pill selection.
+    func updatePreferences(roles: [String], interests: [String], goals: [String]) {
+        let nextRoles = Self.sanitizedSelections(roles, allowed: DunnoTaxonomy.roles.map(\.title))
+        let nextInterests = Self.sanitizedSelections(
+            DunnoTaxonomy.migrateInterests(interests),
+            allowed: DunnoTaxonomy.interests.map(\.title)
+        )
+        let nextGoals = Self.sanitizedSelections(goals, allowed: DunnoTaxonomy.goals.map(\.title))
+
+        guard profile.roles != nextRoles ||
+              profile.interests != nextInterests ||
+              profile.goals != nextGoals else { return }
+
+        profile.roles = nextRoles
+        profile.interests = nextInterests
+        profile.goals = nextGoals
         saveProfile()
         shuffleSeed += 1
     }
@@ -175,23 +322,60 @@ final class DunnoStore: ObservableObject {
         saveCalibration()
     }
 
+    /// Clears only behavior-derived taste learning. Saved ideas, Did It history,
+    /// onboarding choices, and explicit hidden suggestions are preserved.
+    func resetBehaviorLearning() {
+        persistenceWriter.flush()
+        behaviorAffinities = [:]
+        completionFeedbackActivityID = nil
+        defaults.removeObject(forKey: behaviorAffinityKey)
+        defaults.removeObject(forKey: completionFeedbackPendingKey)
+
+        for id in Array(interactions.keys) {
+            guard var state = interactions[id] else { continue }
+            state.timesStarted = 0
+            state.timesCompleted = 0
+            state.saveLearningSignals = 0
+            state.completionFeedback = nil
+            interactions[id] = state
+        }
+
+        saveInteractions()
+        shuffleSeed += 1
+    }
+
     func resetAll() {
+        persistenceWriter.flush()
         profile = .empty
         interactions = [:]
+        invalidateHiddenFeedbackCache()
+        invalidateLibraryCaches()
         calibrationAffinities = [:]
+        behaviorAffinities = [:]
         filters = DunnoFilters()
         currentActivityID = nil
         currentActivityStartedAt = nil
+        currentActivityTimerEndAt = nil
+        collections = []
+        externalActivity = nil
         neverRepeatCompleted = false
         onboardingStep = 0
+        reviewRequestPending = false
+        completionFeedbackActivityID = nil
 
         defaults.removeObject(forKey: profileKey)
         defaults.removeObject(forKey: interactionKey)
         defaults.removeObject(forKey: calibrationKey)
+        defaults.removeObject(forKey: behaviorAffinityKey)
         defaults.removeObject(forKey: currentActivityIDKey)
         defaults.removeObject(forKey: currentActivityDateKey)
+        defaults.removeObject(forKey: currentActivityTimerEndKey)
+        defaults.removeObject(forKey: collectionsKey)
         defaults.removeObject(forKey: neverRepeatCompletedKey)
         defaults.removeObject(forKey: onboardingStepKey)
+        defaults.removeObject(forKey: reviewQualifiedCompletionCountKey)
+        defaults.removeObject(forKey: completionFeedbackPendingKey)
+        DunnoSystemSurfaceBridge.clearCurrentActivity()
         shuffleSeed += 1
     }
 
@@ -202,7 +386,7 @@ final class DunnoStore: ObservableObject {
         state.timesShown += 1
         state.lastShown = Date()
         interactions[activity.id] = state
-        scheduleExposureSave()
+        scheduleInteractionSave()
     }
 
     /// A normal left swipe only means "not right now." It does not train Dunno.
@@ -243,25 +427,49 @@ final class DunnoStore: ObservableObject {
 
         state.isSaved.toggle()
         state.savedAt = state.isSaved ? Date() : nil
+
+        if state.isSaved, state.saveLearningSignals < 2 {
+            state.saveLearningSignals += 1
+            applyBehaviorSignal(for: activity, strength: 0.45)
+        }
+
         interactions[activity.id] = state
+        invalidateLibraryCaches()
+        if !state.isSaved { removeFromAllCollections(activity) }
         saveInteractions()
     }
 
     func complete(_ activity: DunnoActivity) {
         var state = interactions[activity.id] ?? ActivityInteractionState()
+        let wasCompleted = state.isCompleted
+        let wasCurrentActivity = currentActivityID == activity.id
         state.isCompleted = true
         state.completedAt = Date()
+        if !wasCompleted {
+            state.timesCompleted += 1
+            if state.timesCompleted <= 3 {
+                applyBehaviorSignal(for: activity, strength: 1.0)
+            }
+        }
         // Once it is done, Did It is the canonical place for it. Avoid showing the same
         // activity in both halves of Library.
         state.isSaved = false
         state.savedAt = nil
         interactions[activity.id] = state
+        invalidateLibraryCaches()
+        removeFromAllCollections(activity)
 
         if currentActivityID == activity.id {
             clearCurrentActivity()
         }
 
         saveInteractions()
+        if !wasCompleted && wasCurrentActivity {
+            let qualifiedCount = defaults.integer(forKey: reviewQualifiedCompletionCountKey) + 1
+            defaults.set(qualifiedCount, forKey: reviewQualifiedCompletionCountKey)
+            scheduleCompletionFeedbackIfAppropriate(for: activity, completionCount: qualifiedCount)
+            refreshReviewRequestEligibility()
+        }
         shuffleSeed += 1
     }
 
@@ -271,6 +479,7 @@ final class DunnoStore: ObservableObject {
         state.isCompleted = false
         state.completedAt = nil
         interactions[activity.id] = state
+        invalidateLibraryCaches()
         saveInteractions()
         shuffleSeed += 1
     }
@@ -294,7 +503,9 @@ final class DunnoStore: ObservableObject {
         state.isSaved = false
         state.savedAt = nil
         interactions[activity.id] = state
-
+        invalidateHiddenFeedbackCache()
+        invalidateLibraryCaches()
+        removeFromAllCollections(activity)
 
         if currentActivityID == activity.id {
             clearCurrentActivity()
@@ -309,6 +520,7 @@ final class DunnoStore: ObservableObject {
         guard state.notForMe > 0 else { return }
         state.notForMe = 0
         interactions[activity.id] = state
+        invalidateHiddenFeedbackCache()
 
         saveInteractions()
         if refresh { shuffleSeed += 1 }
@@ -323,6 +535,7 @@ final class DunnoStore: ObservableObject {
             state.notForMe = 0
             interactions[activity.id] = state
         }
+        invalidateHiddenFeedbackCache()
 
         saveInteractions()
         shuffleSeed += 1
@@ -346,20 +559,239 @@ final class DunnoStore: ObservableObject {
         (interactions[activity.id]?.notForMe ?? 0) > 0
     }
 
+    // MARK: - Learning feedback
+
+    var completionFeedbackActivity: DunnoActivity? {
+        guard let completionFeedbackActivityID else { return nil }
+        return activityLookup[completionFeedbackActivityID]
+    }
+
+    /// Completion already teaches Dunno a little. This optional feedback is a stronger
+    /// signal and stays fully on-device with the rest of the preference model.
+    func submitCompletionFeedback(for activity: DunnoActivity, positive: Bool) {
+        var state = interactions[activity.id] ?? ActivityInteractionState()
+        let nextValue = positive ? 1 : -1
+        let previousValue = state.completionFeedback ?? 0
+
+        guard previousValue != nextValue else {
+            dismissCompletionFeedback()
+            return
+        }
+
+        // Combine any replacement + new feedback into one learning update. Publishing each
+        // individual tag/category mutation made every EnvironmentObject observer redraw
+        // several times on one tap.
+        var netStrength = positive ? 1.8 : -1.5
+        if previousValue != 0 {
+            netStrength += previousValue > 0 ? -1.8 : 1.5
+        }
+
+        state.completionFeedback = nextValue
+        interactions[activity.id] = state
+        applyBehaviorSignal(for: activity, strength: netStrength)
+
+        // Feedback affects future ranking. There is no need to rebuild the visible card
+        // queue underneath the feedback dismissal animation. Persist after the interaction
+        // frame instead of blocking the tap with a full interactions JSON encode.
+        scheduleInteractionSave()
+        dismissCompletionFeedback()
+    }
+
+    func dismissCompletionFeedback() {
+        completionFeedbackActivityID = nil
+        defaults.removeObject(forKey: completionFeedbackPendingKey)
+    }
+
+    private func scheduleCompletionFeedbackIfAppropriate(for activity: DunnoActivity, completionCount: Int) {
+        guard interactions[activity.id]?.completionFeedback == nil else { return }
+
+        // Ask after the user has seen real value, then only occasionally. This keeps the
+        // prompt useful as training data instead of turning every completion into a survey.
+        let shouldAsk = completionCount == 2 || (completionCount >= 5 && (completionCount - 5).isMultiple(of: 4))
+        guard shouldAsk else { return }
+
+        completionFeedbackActivityID = activity.id
+        defaults.set(activity.id, forKey: completionFeedbackPendingKey)
+    }
+
+    // MARK: - App Store review
+
+    /// Dunno only asks after the user has actually gotten value from the app. The view
+    /// decides when the UI moment is calm enough to call StoreKit.
+    func refreshReviewRequestEligibility() {
+        let qualifiedCount = defaults.integer(forKey: reviewQualifiedCompletionCountKey)
+
+        guard qualifiedCount >= reviewMinimumCompletions else {
+            reviewRequestPending = false
+            return
+        }
+
+        let currentVersion = Self.currentAppVersion
+        let lastVersion = defaults.string(forKey: reviewRequestVersionKey)
+        if lastVersion == currentVersion {
+            reviewRequestPending = false
+            return
+        }
+
+        if let lastRequestDate = defaults.object(forKey: reviewRequestDateKey) as? Date,
+           Date().timeIntervalSince(lastRequestDate) < reviewRequestCooldown {
+            reviewRequestPending = false
+            return
+        }
+
+        reviewRequestPending = true
+    }
+
+    func markReviewRequestAttempted() {
+        reviewRequestPending = false
+        defaults.set(Date(), forKey: reviewRequestDateKey)
+        defaults.set(Self.currentAppVersion, forKey: reviewRequestVersionKey)
+    }
+
+    private static var currentAppVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+    }
+
+
+    // MARK: - Shared activity links
+
+    func handleIncomingShareURL(_ url: URL) {
+        guard let link = DunnoShareLink.parse(url),
+              let activity = activityLookup[link.activityID] else { return }
+
+        incomingShare = DunnoIncomingShare(activity: activity, mode: link.mode)
+    }
+
     // MARK: - Doing Now
 
-    func beginCurrentActivity(_ activity: DunnoActivity) {
+    func beginCurrentActivity(_ activity: DunnoActivity, startedAt: Date = Date()) {
+        var state = interactions[activity.id] ?? ActivityInteractionState()
+        state.timesStarted += 1
+        if state.timesStarted <= 3 {
+            applyBehaviorSignal(for: activity, strength: 0.25)
+        }
+        interactions[activity.id] = state
+        saveInteractions()
+
         currentActivityID = activity.id
-        currentActivityStartedAt = Date()
+        currentActivityStartedAt = startedAt
+        currentActivityTimerEndAt = nil
         defaults.set(activity.id, forKey: currentActivityIDKey)
-        defaults.set(currentActivityStartedAt, forKey: currentActivityDateKey)
+        defaults.set(startedAt, forKey: currentActivityDateKey)
+        defaults.removeObject(forKey: currentActivityTimerEndKey)
+        DunnoSystemSurfaceBridge.mirrorCurrentActivity(activity, startedAt: startedAt, timerEndAt: nil)
+    }
+
+    func startCurrentActivityTimer(minutes: Int? = nil) {
+        guard let activity = currentActivity, let startedAt = currentActivityStartedAt else { return }
+        let suggested = max(5, minutes ?? min(max(activity.minMinutes, 10), 90))
+        let target = Date().addingTimeInterval(TimeInterval(suggested * 60))
+        currentActivityTimerEndAt = target
+        defaults.set(target, forKey: currentActivityTimerEndKey)
+        DunnoSystemSurfaceBridge.updateCurrentActivity(activity, startedAt: startedAt, timerEndAt: target)
+    }
+
+    func extendCurrentActivityTimer(by minutes: Int = 10) {
+        guard let activity = currentActivity, let startedAt = currentActivityStartedAt else { return }
+        let base = max(currentActivityTimerEndAt ?? Date(), Date())
+        let target = base.addingTimeInterval(TimeInterval(max(1, minutes) * 60))
+        currentActivityTimerEndAt = target
+        defaults.set(target, forKey: currentActivityTimerEndKey)
+        DunnoSystemSurfaceBridge.updateCurrentActivity(activity, startedAt: startedAt, timerEndAt: target)
+    }
+
+    func clearCurrentActivityTimer() {
+        guard let activity = currentActivity, let startedAt = currentActivityStartedAt else { return }
+        currentActivityTimerEndAt = nil
+        defaults.removeObject(forKey: currentActivityTimerEndKey)
+        DunnoSystemSurfaceBridge.updateCurrentActivity(activity, startedAt: startedAt, timerEndAt: nil)
+    }
+
+    func suggestedTimerMinutes(for activity: DunnoActivity) -> Int {
+        max(5, min(activity.minMinutes, 90))
+    }
+
+    /// App Intents and widgets can update Dunno's persisted state while the app is being foregrounded.
+    /// Pull that state into the live ObservableObject before displaying Doing Now.
+    func syncCurrentActivityFromPersistence() {
+        var adoptedWidgetStart = false
+
+        if let shared = DunnoSystemSurfaceBridge.sharedCurrentActivity(),
+           activities.contains(where: { $0.id == shared.activity.id }) {
+            let localDate = defaults.object(forKey: currentActivityDateKey) as? Date
+            if localDate == nil || shared.startedAt > (localDate ?? .distantPast) {
+                defaults.set(shared.activity.id, forKey: currentActivityIDKey)
+                defaults.set(shared.startedAt, forKey: currentActivityDateKey)
+                if let timerEndAt = shared.timerEndAt {
+                    defaults.set(timerEndAt, forKey: currentActivityTimerEndKey)
+                } else {
+                    defaults.removeObject(forKey: currentActivityTimerEndKey)
+                }
+                adoptedWidgetStart = true
+            }
+        }
+
+        let persistedID = defaults.string(forKey: currentActivityIDKey)
+        let persistedDate = defaults.object(forKey: currentActivityDateKey) as? Date
+        let persistedTimerEnd = defaults.object(forKey: currentActivityTimerEndKey) as? Date
+        guard persistedID != currentActivityID ||
+              persistedDate != currentActivityStartedAt ||
+              persistedTimerEnd != currentActivityTimerEndAt else { return }
+
+        interactions = Self.decode(
+            [String: ActivityInteractionState].self,
+            from: defaults.data(forKey: interactionKey)
+        ) ?? interactions
+        invalidateHiddenFeedbackCache()
+        invalidateLibraryCaches()
+        behaviorAffinities = Self.decode(
+            [String: Double].self,
+            from: defaults.data(forKey: behaviorAffinityKey)
+        ) ?? behaviorAffinities
+
+        currentActivityID = persistedID
+        currentActivityStartedAt = persistedDate
+        currentActivityTimerEndAt = persistedTimerEnd
+        sanitizePersistedState()
+        expireCurrentActivityIfNeeded()
+
+        if let activity = currentActivity, let startedAt = currentActivityStartedAt {
+            if adoptedWidgetStart {
+                var state = interactions[activity.id] ?? ActivityInteractionState()
+                state.timesStarted += 1
+                if state.timesStarted <= 3 {
+                    applyBehaviorSignal(for: activity, strength: 0.25)
+                }
+                interactions[activity.id] = state
+                saveInteractions()
+            }
+
+            DunnoSystemSurfaceBridge.mirrorCurrentActivity(activity, startedAt: startedAt, timerEndAt: currentActivityTimerEndAt)
+        }
+
+        shuffleSeed += 1
+    }
+
+    func repairCurrentSystemSurfacesIfNeeded() {
+        guard let activity = currentActivity, let startedAt = currentActivityStartedAt else {
+            DunnoSystemSurfaceBridge.clearCurrentActivity()
+            return
+        }
+        DunnoSystemSurfaceBridge.repairCurrentActivityIfNeeded(
+            activity,
+            startedAt: startedAt,
+            timerEndAt: currentActivityTimerEndAt
+        )
     }
 
     func clearCurrentActivity() {
         currentActivityID = nil
         currentActivityStartedAt = nil
+        currentActivityTimerEndAt = nil
         defaults.removeObject(forKey: currentActivityIDKey)
         defaults.removeObject(forKey: currentActivityDateKey)
+        defaults.removeObject(forKey: currentActivityTimerEndKey)
+        DunnoSystemSurfaceBridge.clearCurrentActivity()
     }
 
     func expireCurrentActivityIfNeeded() {
@@ -385,6 +817,14 @@ final class DunnoStore: ObservableObject {
     }
 
     // MARK: - Right Now
+
+    /// Nearby availability is session-only. Coordinates and place results live in the
+    /// foreground-only location service and are never persisted into the recommendation store.
+    func updateNearbyAvailability(_ kinds: Set<DunnoNearbyKind>) {
+        guard nearbyAvailableKinds != kinds else { return }
+        nearbyAvailableKinds = kinds
+        shuffleSeed += 1
+    }
 
     func expireFiltersIfNeeded() {
         guard filters.isActive, let filtersUpdatedAt else { return }
@@ -468,7 +908,8 @@ final class DunnoStore: ObservableObject {
         let hasPreferenceData = !profile.roles.isEmpty ||
             !profile.interests.isEmpty ||
             !profile.goals.isEmpty ||
-            !calibrationAffinities.isEmpty
+            !calibrationAffinities.isEmpty ||
+            !behaviorAffinities.isEmpty
 
         let lane: RecommendationLane
         if !hasPreferenceData {
@@ -502,7 +943,10 @@ final class DunnoStore: ObservableObject {
         // choices should not make one category unbeatable forever.
         value += cachedPreferenceAffinity ?? preferenceAffinity(for: activity)
         value += calibrationScore(for: activity)
+        value += behaviorScore(for: activity)
         value += feedbackScore(for: activity)
+        value += daypartScore(for: activity)
+        value += nearbyScore(for: activity)
         value += rightNowFitScore(for: activity, filters: filters)
         value += historyScore(for: activity)
 
@@ -545,6 +989,15 @@ final class DunnoStore: ObservableObject {
         return min(value, 20)
     }
 
+    private func nearbyScore(for activity: DunnoActivity) -> Double {
+        guard let kind = metadata(for: activity).nearbyKind,
+              nearbyAvailableKinds.contains(kind) else { return 0 }
+
+        // Nearby is a contextual tie-breaker, not a requirement. A confirmed real-world
+        // match should make an idea more actionable without overwhelming learned taste.
+        return 3.1
+    }
+
     private func rightNowFitScore(for activity: DunnoActivity, filters: DunnoFilters) -> Double {
         var value = 0.0
 
@@ -578,7 +1031,7 @@ final class DunnoStore: ObservableObject {
         if let social = filters.social, social != .any {
             if activity.social.contains(social) {
                 value += 2.1
-            } else if activity.social.count == 1 && activity.social.contains(.any) {
+            } else if activity.social.contains(.any) {
                 value += 0.45
             }
         }
@@ -669,7 +1122,7 @@ final class DunnoStore: ObservableObject {
         }
 
         if let social = filters.social, social != .any {
-            let universal = activity.social.count == 1 && activity.social.contains(.any)
+            let universal = activity.social.contains(.any)
             if !activity.social.contains(social) && !universal {
                 return false
             }
@@ -830,24 +1283,79 @@ final class DunnoStore: ObservableObject {
         return min(max(value, -8), 8)
     }
 
+    private func behaviorScore(for activity: DunnoActivity) -> Double {
+        let metadata = metadata(for: activity)
+        var value = behaviorAffinities[metadata.calibrationCategoryKey] ?? 0
+
+        for key in metadata.calibrationTagKeys {
+            value += behaviorAffinities[key] ?? 0
+        }
+        for key in metadata.calibrationGoalKeys {
+            value += behaviorAffinities[key] ?? 0
+        }
+
+        // Learned behavior should matter, but it should never overpower the moment.
+        return min(max(value, -10), 10)
+    }
+
+    private func daypartScore(for activity: DunnoActivity, now: Date = Date()) -> Double {
+        let metadata = metadata(for: activity)
+        guard !metadata.preferredDayparts.isEmpty else { return 0 }
+
+        let current = DunnoDaypart.current(date: now)
+        if metadata.preferredDayparts.contains(current) {
+            return metadata.strictDaypart ? 4.5 : 2.0
+        }
+
+        // Explicit sunset/night/morning ideas should become very unlikely at the wrong
+        // time without creating a hard filter that can make a narrow Right Now set empty.
+        return metadata.strictDaypart ? -30 : -5
+    }
+
     private func feedbackScore(for activity: DunnoActivity) -> Double {
+        let hidden = hiddenFeedbackSignals()
+        guard !hidden.isEmpty else { return 0 }
+
         let candidateSignals = metadata(for: activity).signals
         var categoryPenalty = 0.0
         var similarityPenalty = 0.0
 
-        for hidden in activities where isNotInterested(hidden) {
-            if hidden.category == activity.category {
+        for feedback in hidden {
+            if feedback.category == activity.category {
                 categoryPenalty += 0.9
             }
 
-            let hiddenSignals = metadata(for: hidden).signals
-            let overlap = candidateSignals.intersection(hiddenSignals).count
+            let overlap = candidateSignals.intersection(feedback.signals).count
             similarityPenalty += min(1.15, Double(overlap) * 0.20)
         }
 
         // Multiple hidden ideas should teach Dunno, but they should not accidentally erase
         // a whole category forever. Exact hidden activities are already hard-excluded.
         return -(min(categoryPenalty, 3.8) + min(similarityPenalty, 4.2))
+    }
+
+    private func hiddenFeedbackSignals() -> [HiddenFeedbackSignal] {
+        if let hiddenFeedbackCache { return hiddenFeedbackCache }
+
+        let signals = activities.compactMap { activity -> HiddenFeedbackSignal? in
+            guard isNotInterested(activity) else { return nil }
+            return HiddenFeedbackSignal(
+                category: activity.category,
+                signals: metadata(for: activity).signals
+            )
+        }
+        hiddenFeedbackCache = signals
+        return signals
+    }
+
+    private func invalidateHiddenFeedbackCache() {
+        hiddenFeedbackCache = nil
+        hiddenActivitiesCache = nil
+    }
+
+    private func invalidateLibraryCaches() {
+        savedActivitiesCache = nil
+        completedActivitiesCache = nil
     }
 
     private func deterministicJitter(for activity: DunnoActivity, amplitude: Double) -> Double {
@@ -861,9 +1369,13 @@ final class DunnoStore: ObservableObject {
             return cached
         }
 
+        let timeMetadata = Self.daypartMetadata(for: activity)
         let metadata = ActivityMetadata(
             signals: DunnoTaxonomy.activitySignals(activity),
             normalizedGoals: Set(activity.goals.map(DunnoTaxonomy.normalize)),
+            preferredDayparts: timeMetadata.dayparts,
+            strictDaypart: timeMetadata.strict,
+            nearbyKind: DunnoNearbyKind.infer(for: activity),
             calibrationCategoryKey: "category:\(DunnoTaxonomy.normalize(activity.category.rawValue))",
             calibrationTagKeys: activity.tags.map { "tag:\(DunnoTaxonomy.normalize($0))" },
             calibrationGoalKeys: activity.goals.map { "goal:\(DunnoTaxonomy.normalize($0))" },
@@ -884,6 +1396,70 @@ final class DunnoStore: ObservableObject {
     private func adjustAffinity(_ key: String, by amount: Double) {
         let next = (calibrationAffinities[key] ?? 0) + amount
         calibrationAffinities[key] = min(max(next, -4), 4)
+    }
+
+    private func applyBehaviorSignal(for activity: DunnoActivity, strength: Double) {
+        let metadata = metadata(for: activity)
+        var updated = behaviorAffinities
+
+        func adjust(_ key: String, by amount: Double) {
+            let next = (updated[key] ?? 0) + amount
+            updated[key] = min(max(next, -5), 5)
+        }
+
+        adjust(metadata.calibrationCategoryKey, by: strength * 0.36)
+
+        for key in metadata.calibrationTagKeys.prefix(5) {
+            adjust(key, by: strength * 0.18)
+        }
+        for key in metadata.calibrationGoalKeys.prefix(3) {
+            adjust(key, by: strength * 0.24)
+        }
+
+        // One assignment means one Published change instead of up to nine redraw-triggering
+        // dictionary mutations for a single user action.
+        behaviorAffinities = updated
+        saveBehaviorAffinities()
+    }
+
+    private static func daypartMetadata(for activity: DunnoActivity) -> (dayparts: Set<DunnoDaypart>, strict: Bool) {
+        let text = ([activity.title, activity.hook, activity.description] + activity.tags)
+            .joined(separator: " ")
+            .lowercased()
+        let title = activity.title.lowercased()
+
+        var dayparts: Set<DunnoDaypart> = []
+        var strict = false
+
+        if title.contains("tomorrow morning") {
+            return ([.evening, .night], false)
+        }
+
+        let strictMorning = ["sunrise", "morning lap"]
+        let strictEvening = ["sunset", "golden hour"]
+        let strictNight = ["night walk", "night bike", "midnight", "late-night", "stargaz", "constellation", "stars or planets", "planet tonight", "identify one planet"]
+
+        if strictMorning.contains(where: { title.contains($0) }) {
+            dayparts.formUnion([.morning])
+            strict = true
+        }
+        if strictEvening.contains(where: { title.contains($0) }) {
+            dayparts.formUnion([.evening])
+            strict = true
+        }
+        if strictNight.contains(where: { title.contains($0) }) {
+            dayparts.formUnion([.night])
+            strict = true
+        }
+
+        if !strict {
+            if text.contains("morning") || text.contains("breakfast") { dayparts.insert(.morning) }
+            if text.contains("lunch") { dayparts.insert(.daytime) }
+            if text.contains("evening") || text.contains("dinner") { dayparts.insert(.evening) }
+            if text.contains("night") || text.contains("moon") || text.contains("stars") { dayparts.insert(.night) }
+        }
+
+        return (dayparts, strict)
     }
 
     // MARK: - Persistence + migration
@@ -907,6 +1483,8 @@ final class DunnoStore: ObservableObject {
         let validIDs = Set(activities.map(\.id))
         let originalCount = interactions.count
         interactions = interactions.filter { validIDs.contains($0.key) }
+        invalidateHiddenFeedbackCache()
+        invalidateLibraryCaches()
 
         if originalCount != interactions.count {
             saveInteractions()
@@ -915,13 +1493,25 @@ final class DunnoStore: ObservableObject {
         if let currentActivityID, !validIDs.contains(currentActivityID) {
             clearCurrentActivity()
         }
+
+        if let completionFeedbackActivityID, !validIDs.contains(completionFeedbackActivityID) {
+            dismissCompletionFeedback()
+        }
+
+        let originalCollections = collections
+        collections = collections.map { collection in
+            var copy = collection
+            copy.activityIDs = copy.activityIDs.filter { validIDs.contains($0) }
+            return copy
+        }
+        if collections != originalCollections { saveCollections() }
     }
 
 
-    /// Exposure tracking can happen rapidly while swiping. Persist it shortly after the
-    /// interaction instead of JSON-encoding the full state dictionary on the animation
-    /// frame. User-visible actions (save, complete, hide, etc.) still persist immediately.
-    private func scheduleExposureSave() {
+    /// Exposure and lightweight feedback can happen on animation/tap frames. Persist them
+    /// shortly afterward so JSON encoding does not compete with gesture or card animation
+    /// work. Critical library/current-activity actions still persist immediately.
+    private func scheduleInteractionSave() {
         exposureSaveTask?.cancel()
         exposureSaveTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(220))
@@ -937,9 +1527,7 @@ final class DunnoStore: ObservableObject {
     }
 
     private func saveInteractions() {
-        if let data = try? JSONEncoder().encode(interactions) {
-            defaults.set(data, forKey: interactionKey)
-        }
+        persistenceWriter.save(interactions, key: interactionKey)
     }
 
     private func saveCalibration() {
@@ -948,6 +1536,30 @@ final class DunnoStore: ObservableObject {
         }
     }
 
+    private func saveBehaviorAffinities() {
+        persistenceWriter.save(behaviorAffinities, key: behaviorAffinityKey)
+    }
+
+    private func saveCollections() {
+        if let data = try? JSONEncoder().encode(collections) {
+            defaults.set(data, forKey: collectionsKey)
+        }
+    }
+
+    private func removeFromAllCollections(_ activity: DunnoActivity) {
+        var changed = false
+        for index in collections.indices where collections[index].activityIDs.contains(activity.id) {
+            collections[index].activityIDs.removeAll { $0 == activity.id }
+            changed = true
+        }
+        if changed { saveCollections() }
+    }
+
+    /// Used by App Intents that create a temporary store and need their background
+    /// persistence to land before the intent hands control back to the running app.
+    func flushPersistence() {
+        persistenceWriter.flush()
+    }
 
     private static func sanitizedSelections(_ values: [String], allowed: [String]) -> [String] {
         let allowedSet = Set(allowed)
@@ -962,6 +1574,38 @@ final class DunnoStore: ObservableObject {
     private static func decode<T: Decodable>(_ type: T.Type, from data: Data?) -> T? {
         guard let data else { return nil }
         return try? JSONDecoder().decode(type, from: data)
+    }
+}
+
+nonisolated private final class DunnoDefaultsBox: @unchecked Sendable {
+    let value: UserDefaults
+
+    init(_ value: UserDefaults) {
+        self.value = value
+    }
+}
+
+/// JSON encoding the entire interaction dictionary was happening on the main actor during
+/// Done, note saves, feedback, and other taps. A serial utility queue preserves write order
+/// while keeping that work off the interaction frame.
+nonisolated private final class DunnoPersistenceWriter: @unchecked Sendable {
+    private let defaultsBox: DunnoDefaultsBox
+    private let queue = DispatchQueue(label: "com.codearc.dunno.persistence", qos: .utility)
+
+    init(defaults: UserDefaults) {
+        defaultsBox = DunnoDefaultsBox(defaults)
+    }
+
+    func save<T: Encodable & Sendable>(_ value: T, key: String) {
+        let defaultsBox = defaultsBox
+        queue.async {
+            guard let data = try? JSONEncoder().encode(value) else { return }
+            defaultsBox.value.set(data, forKey: key)
+        }
+    }
+
+    func flush() {
+        queue.sync { }
     }
 }
 
