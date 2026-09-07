@@ -40,11 +40,11 @@ struct dunnoApp: App {
                     }
                 }
                 .onOpenURL { url in
-                    store.handleIncomingShareURL(url)
+                    handleIncomingURL(url)
                 }
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                     guard let url = activity.webpageURL else { return }
-                    store.handleIncomingShareURL(url)
+                    handleIncomingURL(url)
                 }
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
                     guard let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
@@ -62,4 +62,39 @@ struct dunnoApp: App {
                 }
         }
     }
+
+    private func handleIncomingURL(_ url: URL) {
+        if DunnoEventDeepLink.matches(url) {
+            store.incomingShare = nil
+            store.externalActivity = nil
+            NotificationCenter.default.post(name: .dunnoOpenForYou, object: nil)
+            return
+        }
+
+        store.handleIncomingShareURL(url)
+    }
+
+}
+
+private enum DunnoEventDeepLink {
+    static let host = "dunno.codearc.studio"
+    static let path = "/event/dunno2"
+
+    static func matches(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == host else { return false }
+
+        let normalizedPath: String
+        if url.path.count > 1, url.path.hasSuffix("/") {
+            normalizedPath = String(url.path.dropLast())
+        } else {
+            normalizedPath = url.path
+        }
+
+        return normalizedPath == path
+    }
+}
+
+extension Notification.Name {
+    static let dunnoOpenForYou = Notification.Name("dunno.openForYou")
 }
